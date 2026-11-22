@@ -24,11 +24,11 @@ RIGHT_ARM = (R_SHOULDER, R_ELBOW, R_WRIST)
 def joint_angle(kps: np.ndarray, a: int, b: int, c: int) -> tuple[float, float]:
     """Interior angle ABC in degrees at joint b; returns (angle, confidence).
 
-    Confidence is the product of the three keypoint confidences, so a single
-    shaky point drags the measurement down.
+    Confidence is the min of the three keypoint confidences: the angle is
+    only as trustworthy as its weakest point.
     """
     pa, pb, pc = kps[a], kps[b], kps[c]
-    conf = float(pa[2] * pb[2] * pc[2])
+    conf = float(min(pa[2], pb[2], pc[2]))
     v1 = pa[:2] - pb[:2]
     v2 = pc[:2] - pb[:2]
     n1, n2 = np.linalg.norm(v1), np.linalg.norm(v2)

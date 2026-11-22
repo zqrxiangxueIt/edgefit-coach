@@ -84,4 +84,4 @@ def test_lost_person_resets_to_idle():
 def test_threshold_validation():
     import pytest
     with pytest.raises(ValueError):
-        CurlCounter(up_angle=100, down_angle=110, full_rep_angle=105)
+        CurlCounter(up_angle=100, flex_angle=110, full_rep_angle=75)

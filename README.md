@@ -50,7 +50,7 @@ python edge/edge_main.py --mode event --source camera
 
 ## 里程碑
 
-- [x] M0 仓库骨架 + B 端离线管线（测试视频 → 姿态 → 弯举计数）
+- [x] M0 仓库骨架 + B 端离线管线（测试视频 → 姿态 → 弯举计数）✅ 2026-11-22：DirectML 5.8ms/帧，离线视频 6 reps 计数正确
 - [ ] M1 ZMQ 跨机链路（Pi ↔ PC over Tailscale）+ 时钟同步
 - [ ] M2 A 端 event 模式（运动门控 + 自适应压缩）
 - [ ] M3 USB 摄像头 + Web 仪表盘

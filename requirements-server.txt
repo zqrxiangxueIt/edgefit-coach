@@ -1,11 +1,14 @@
 # B 端（边缘 PC，Windows/DirectML）
+# ⚠ 依赖顺序坑：ultralytics-platform 会连带安装 CPU 版 onnxruntime，
+#    它会遮蔽 onnxruntime-directml 的 DmlExecutionProvider。
+#    安装顺序必须是：先装其它，最后装 onnxruntime-directml；切勿再装 onnxruntime。
 ultralytics>=8.3.0        # 模型导出与基准对比
-onnxruntime-directml>=1.20  # AMD GPU 推理（RX 9070GRE）
 fastapi>=0.115
 uvicorn[standard]>=0.30
 pyzmq>=26.0
 opencv-python>=4.10
 numpy>=1.26
+onnxruntime-directml>=1.20  # AMD GPU 推理（RX 9070GRE）——永远最后安装
 
 # dev
 pytest>=8.0
