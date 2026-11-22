@@ -227,3 +227,42 @@ def test_threshold_validation():
         CurlCounter(debounce=0)
     with pytest.raises(ValueError):
         CurlCounter(min_conf=1.5)
+
+
+def _feed_timed(counter, seq):
+    """Feed (angle, t_seconds) pairs; returns events."""
+    events = []
+    for beta, t in seq:
+        events.extend(counter.update(frame(beta), t=t))
+    return events
+
+
+def test_tempo_measured_per_rep():
+    """t_con/t_ecc 从相位锚点计算：伸展→最低点=向心，最低点→完成=离心。"""
+    c = CurlCounter()
+    warm = [(170.0, i / 10) for i in range(10)]          # extended 0..0.9s
+    fast_lift = [(170 - 130 * (i + 1) / 6, 1.0 + i * 0.05) for i in range(6)]  # 1.0→1.25
+    hold_bottom = [(40.0, 1.3 + i * 0.1) for i in range(3)]                    # 1.3..1.5
+    slow_lower = [(40 + 130 * (i + 1) / 8, 1.6 + i * 0.4) for i in range(8)]   # 1.6→4.4
+    done = [(170.0, 4.5 + i * 0.15) for i in range(4)]
+    events = _feed_timed(c, warm + fast_lift + hold_bottom + slow_lower + done)
+    assert len(events) == 1
+    ev = events[0]
+    # lift: last-extended ~0.9 -> min at ~1.3  => t_con ~0.4s
+    assert 0.2 <= ev.t_con <= 0.6
+    # lower: min ~1.3 -> completion ~4.5+ => t_ecc ~3s
+    assert 2.5 <= ev.t_ecc <= 3.6
+    assert not any("下放过快" in w for w in c.stats.warnings)
+
+
+def test_tempo_fast_eccentric_warns():
+    c = CurlCounter()
+    seq = [(170.0, i / 10) for i in range(10)]
+    seq += [(170 - 130 * (i + 1) / 6, 1.0 + i * 0.05) for i in range(6)]
+    seq += [(40.0, 1.3), (40.0, 1.4)]                    # brief bottom
+    seq += [(40 + 130 * (i + 1) / 6, 1.5 + i * 0.05) for i in range(6)]  # back up fast
+    seq += [(170.0, 1.9 + i * 0.15) for i in range(4)]
+    events = _feed_timed(c, seq)
+    assert len(events) == 1
+    assert events[0].t_ecc < 1.0
+    assert any("下放过快" in w for w in c.stats.warnings)

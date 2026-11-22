@@ -85,6 +85,14 @@ class CameraSource(Source):
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
         self.cap.set(cv2.CAP_PROP_FPS, fps)
+        # keep the driver queue shallow: a deep queue adds one frame-period
+        # of latency per buffered frame (60-150ms observed on MJPG cams).
+        # The grabber thread's continuous draining is the real fix; this is
+        # belt-and-braces for drivers that honour it (V4L2 does).
+        try:
+            self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        except Exception:
+            pass
         self._fps = fps
         self._index = index
         self._warned = False

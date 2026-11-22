@@ -98,6 +98,7 @@ class StreamingPipeline(threading.Thread):
         self.stats_every = stats_every
         self.session = session            # TrainingSession or None (survives
         self._reset_req = threading.Event()  # power cycles via PowerManager)
+        self._last_enc_t = 0.0            # lazy JPEG re-encode throttle
         self._lock = threading.Lock()
         self._status = PipelineStatus()
         self._latest_jpeg: bytes | None = None
@@ -263,6 +264,7 @@ class StreamingPipeline(threading.Thread):
                     self._events.append({
                         "index": ev.index, "side": ev.side, "full": ev.full,
                         "min_angle": round(ev.min_angle, 1),
+                        "t_con": round(ev.t_con, 2), "t_ecc": round(ev.t_ecc, 2),
                         "t": round(ev.t - t_begin, 2)})
                 print(f"  [rep {ev.index}][{ev.side}] full={ev.full} "
                       f"min_angle={ev.min_angle:.0f}", flush=True)
@@ -280,11 +282,16 @@ class StreamingPipeline(threading.Thread):
             if offset is not None:
                 e2e_ms.append((t_recv - header.ts_capture + offset) * 1000)
 
-            ok, buf = cv2.imencode(".jpg", annotated,
-                                   [cv2.IMWRITE_JPEG_QUALITY, 80])
-            if ok:
-                with self._lock:
-                    self._latest_jpeg = buf.tobytes()
+            # lazy encode: the WS consumer pulls at ~20 Hz, so encoding all
+            # ~30 incoming frames/s wastes a third of the encodes
+            now_enc = time.time()
+            if now_enc - self._last_enc_t >= 0.05:
+                self._last_enc_t = now_enc
+                ok, buf = cv2.imencode(".jpg", annotated,
+                                       [cv2.IMWRITE_JPEG_QUALITY, 80])
+                if ok:
+                    with self._lock:
+                        self._latest_jpeg = buf.tobytes()
 
             if self._record_path:
                 if writer is None:

@@ -25,6 +25,7 @@ from fastapi.responses import FileResponse
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from common.protocol import VALID_MODES  # noqa: E402
+from server.history import HistoryStore  # noqa: E402
 from server.power import PowerManager  # noqa: E402
 
 CONNECT = os.environ.get("EDGE_CONNECT", "tcp://100.93.84.79:5555")
@@ -33,6 +34,7 @@ BACKEND = os.environ.get("EDGE_BACKEND", "dml")
 RECORD = os.environ.get("EDGE_RECORD", "")
 
 power = PowerManager(CONNECT, MODEL, BACKEND)
+store = HistoryStore(os.environ.get("EDGE_DB", "data/edgefit.db"))
 
 
 @asynccontextmanager
@@ -72,14 +74,24 @@ async def session_start(sets: int = 3, reps: int = 8, rest: float = 60.0):
             pipe = power.pipeline()
         total = pipe.status().reps if pipe else 0
         power.session.start(total, sets=sets, reps_per_set=reps, rest_sec=rest)
+        store.begin(sets_planned=sets, reps_per_set=reps, rest_sec=rest)
         return {"detail": "session started", **power.session.snapshot()}
     except ValueError as e:
         raise HTTPException(400, str(e))
 
 
+def _finish_open_session(pipe) -> None:
+    if store.current_id is None:
+        return
+    store.finish(pipe.status() if pipe else {},
+                 power.session.snapshot())
+
+
 @app.post("/api/session/stop")
 async def session_stop():
+    pipe = power.pipeline()
     power.session.stop()
+    _finish_open_session(pipe)
     return {"detail": "session stopped"}
 
 
@@ -125,6 +137,21 @@ async def status():
     return {"power": st, "status": s, "events": pipe.recent_events() if pipe else []}
 
 
+@app.get("/api/history")
+async def history(limit: int = 20):
+    return store.recent_sessions(limit)
+
+
+@app.get("/api/history/reps")
+async def history_reps(limit: int = 300):
+    return store.recent_reps(limit)
+
+
+@app.get("/api/history/last")
+async def history_last():
+    return store.last_session("curl")
+
+
 @app.websocket("/ws")
 async def stream(ws: WebSocket):
     await ws.accept()
@@ -137,6 +164,12 @@ async def stream(ws: WebSocket):
                 continue
             meta = pipe.status()
             payload = pipe.latest_jpeg()
+            events = pipe.recent_events()
+            snap = power.session.snapshot()
+            if store.current_id is not None:
+                store.feed(events)
+                if snap["phase"] == "done":
+                    _finish_open_session(pipe)
             await ws.send_text(json.dumps({
                 "power": "on",
                 "session": power.session.snapshot(),
@@ -154,7 +187,7 @@ async def stream(ws: WebSocket):
                 "jpeg_q": meta.jpeg_q,
                 "motion": round(meta.motion, 2),
                 "running": meta.running,
-                "events": pipe.recent_events()[-5:],
+                "events": events[-5:],
             }))
             if payload:
                 await ws.send_bytes(payload)

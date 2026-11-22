@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -25,6 +26,57 @@ from common.protocol import VALID_MODES, FrameHeader, encode_frame
 from edge.preprocess import (CascadePreprocessor, EventPreprocessor,
                              PrivacyPreprocessor, RawPreprocessor)
 from edge.sources import CameraSource, VideoFileSource
+
+
+class FrameGrabber(threading.Thread):
+    """Continuously drains the source into a latest-only slot.
+
+    Two wins: (a) the V4L2/driver queue never backfills, killing the
+    60-150ms camera-buffer latency; (b) slow preprocessing (cascade/privacy
+    20-30ms) no longer blocks capture -- it just drops stale frames.
+    """
+
+    def __init__(self, make_source, loop: bool):
+        super().__init__(daemon=True)
+        self._make_source = make_source
+        self._loop = loop
+        self._src = make_source()
+        self._lock = threading.Lock()
+        self._slot = None          # (count, frame, t_capture)
+        self._count = 0
+        self.exhausted = threading.Event()
+        self.error: Exception | None = None
+
+    def run(self):
+        try:
+            while True:
+                item = self._src.read()
+                if item is None:
+                    if self._loop:
+                        self._src.close()
+                        self._src = self._make_source()
+                        continue
+                    self.exhausted.set()
+                    return
+                with self._lock:
+                    self._count += 1
+                    self._slot = (self._count, *item)
+        except Exception as e:      # camera unplugged etc: surface and stop
+            self.error = e
+            self.exhausted.set()
+
+    def latest(self, last_count: int):
+        """Returns (new_count, frame, t) if a NEWER frame exists, else None."""
+        with self._lock:
+            if self._slot is not None and self._slot[0] != last_count:
+                return self._slot
+            return None
+
+    def close(self):
+        try:
+            self._src.close()
+        except Exception:
+            pass
 
 _DETECTOR = None
 
@@ -86,8 +138,10 @@ def main() -> None:
     ap.add_argument("--duration", type=float, default=0.0, help="stop after N seconds (0=never)")
     args = ap.parse_args()
 
-    src = build_source(args)
     pre = build_preprocessor(args)
+    grabber = FrameGrabber(lambda: build_source(args), args.loop)
+    grabber.start()
+    last_count = 0
 
     ctx = zmq.Context()
     sock = ctx.socket(zmq.PUB)
@@ -106,16 +160,18 @@ def main() -> None:
     t_stat, n_stat, b_stat = time.time(), 0, 0
     try:
         while True:
+            if grabber.error is not None:
+                print(f"[edge] capture thread error: {grabber.error}", flush=True)
+                break
+            if grabber.exhausted.is_set():
+                break
             if args.duration and time.time() - t_start > args.duration:
                 break
-            item = src.read()
+            item = grabber.latest(last_count)
             if item is None:
-                if args.source == "file" and args.loop:
-                    src.close()
-                    src = build_source(args)
-                    continue
-                break
-            frame, t_capture = item
+                time.sleep(0.002)      # no newer frame yet
+                continue
+            last_count, frame, t_capture = item
             pf = pre.process(frame)
             # serve control pings on EVERY iteration: in event mode idle
             # frames are skipped (pf is None) and a ping would otherwise
@@ -183,7 +239,7 @@ def main() -> None:
     except KeyboardInterrupt:
         print("\n[edge] interrupted")
     finally:
-        src.close()
+        grabber.close()
         sock.close(0)
         ctrl.close(0)
         ctx.term()

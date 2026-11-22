@@ -57,6 +57,8 @@ class RepEvent:
     full: bool          # False = half rep (insufficient range)
     min_angle: float    # best flexion reached during the rep
     t: float            # completion time (seconds, server clock)
+    t_con: float = 0.0  # concentric (lifting) duration, s -- extended -> min
+    t_ecc: float = 0.0  # eccentric (lowering) duration, s -- min -> extended
 
 
 @dataclass
@@ -115,6 +117,9 @@ class _ArmTracker:
         self._min_angle_in_rep = 180.0
         self.gate = _ActivityGate()
         self.rep_started_t: Optional[float] = None
+        self._t_min: Optional[float] = None         # when this rep hit its
+        self._t_last_extended: Optional[float] = None  # deepest flexion / last
+        # fully-extended sample -- the two anchors of tempo measurement
 
     def lost(self) -> None:
         self.phase = Phase.IDLE
@@ -122,6 +127,8 @@ class _ArmTracker:
         self._debounce_left = self.debounce
         self.gate.reset()
         self.rep_started_t = None
+        self._t_min = None
+        self._t_last_extended = None
 
     def step(self, angle: float, t: float) -> Optional[float]:
         """Advance one frame.
@@ -210,7 +217,9 @@ class CurlCounter:
                  min_conf: float = 0.35,
                  side: str = "both",
                  check_torso_swing: bool = True,
-                 full_rep_tol: float = 0.5) -> None:
+                 full_rep_tol: float = 0.5,
+                 tempo_ecc_min: float = 1.0,
+                 tempo_con_max: float = 3.5) -> None:
         if not full_rep_angle < flex_angle < up_angle:
             raise ValueError("require full_rep_angle < flex_angle < up_angle")
         if side not in ("both", "left", "right"):
@@ -225,6 +234,8 @@ class CurlCounter:
         self.flex_angle = flex_angle
         self.full_rep_angle = full_rep_angle
         self.full_rep_tol = full_rep_tol   # angles are estimates; tolerate ~0.5deg
+        self.tempo_ecc_min = tempo_ecc_min  # eccentric (lowering) coach floor
+        self.tempo_con_max = tempo_con_max  # concentric grind ceiling
         self.stats = SessionStats()
         self.torso = TorsoSwingChecker() if check_torso_swing else None
         self.trackers: dict[str, _ArmTracker] = {}
@@ -259,10 +270,19 @@ class CurlCounter:
             if conf < self.min_conf:
                 tracker.lost()
                 continue
+            # tempo anchors: _t_last_extended is the last fully-extended
+            # sample BEFORE the lift leaves EXTENDED (only updated while
+            # extended -- ascent frames crossing up_angle must NOT move it,
+            # they belong to the eccentric phase of the outgoing rep);
+            # _t_min is the moment this rep hit its deepest flexion
+            if angle >= tracker.up_angle and tracker.phase is Phase.EXTENDED:
+                tracker._t_last_extended = t
             if tracker.phase is Phase.CURLING:
                 # min only accumulates on confirmed CURLING: an unconfirmed
                 # deep-flex glitch while EXTENDED cannot pollute the next rep
-                tracker._min_angle_in_rep = min(tracker._min_angle_in_rep, angle)
+                if angle < tracker._min_angle_in_rep:
+                    tracker._min_angle_in_rep = angle
+                    tracker._t_min = t
             prev_phase = tracker.phase
             sh, el, wr = LEFT_ARM if side == "left" else RIGHT_ARM
             upper_arm = float(np.hypot(*(kps[sh, :2] - kps[el, :2])))
@@ -284,16 +304,31 @@ class CurlCounter:
                 self.stats.phantom_reps_suppressed += 1
                 continue
             full = rep_min <= self.full_rep_angle + self.full_rep_tol
+            # tempo from the anchors (guard against missing anchors: a rep
+            # that never sampled a full extension has no measurable phases)
+            t_con = (tracker._t_min - tracker._t_last_extended
+                     if tracker._t_min is not None
+                     and tracker._t_last_extended is not None else 0.0)
+            t_ecc = (t - tracker._t_min
+                     if tracker._t_min is not None else 0.0)
             self.stats.reps += 1
             self.stats.full_reps += int(full)
             self.stats.half_reps += int(not full)
-            ev = RepEvent(self.stats.reps, side, full, rep_min, t)
+            ev = RepEvent(self.stats.reps, side, full, rep_min, t,
+                          t_con=max(0.0, t_con), t_ecc=max(0.0, t_ecc))
             events.append(ev)
             self.stats.last_rep = ev
             if not full:
                 self.stats.warnings.append(
                     f"[{side}] rep {ev.index}: 幅度不足 (最低 {ev.min_angle:.0f}°, "
                     f"需 < {self.full_rep_angle:.0f}°)")
+            if 0 < ev.t_ecc < self.tempo_ecc_min:
+                self.stats.warnings.append(
+                    f"[{side}] rep {ev.index}: 下放过快 ({ev.t_ecc:.1f}s)，"
+                    f"离心建议 ≥{self.tempo_ecc_min:.0f}s")
+            if ev.t_con > self.tempo_con_max:
+                self.stats.warnings.append(
+                    f"[{side}] rep {ev.index}: 举起吃力 ({ev.t_con:.1f}s)，考虑减重")
             if self.torso is not None and tracker.rep_started_t is not None:
                 swing = self.torso.verdict(side, tracker.rep_started_t, t)
                 if swing:
