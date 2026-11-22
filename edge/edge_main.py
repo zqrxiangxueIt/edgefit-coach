@@ -22,8 +22,21 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import zmq
 
 from common.protocol import VALID_MODES, FrameHeader, encode_frame
-from edge.preprocess import EventPreprocessor, RawPreprocessor
+from edge.preprocess import (CascadePreprocessor, EventPreprocessor,
+                             PrivacyPreprocessor, RawPreprocessor)
 from edge.sources import CameraSource, VideoFileSource
+
+_DETECTOR = None
+
+
+def get_detector(path: str):
+    """Lazily build the person detector once; mode switches reuse the model."""
+    global _DETECTOR
+    if _DETECTOR is None:
+        from edge.cascade import PersonDetector
+        print(f"[edge] loading person detector: {path}", flush=True)
+        _DETECTOR = PersonDetector(path)
+    return _DETECTOR
 
 
 def build_preprocessor(args):
@@ -32,7 +45,14 @@ def build_preprocessor(args):
     if args.mode == "event":
         return EventPreprocessor(args.max_width, args.q_min, args.q_max,
                                  keepalive_every=args.keepalive)
-    raise ValueError(f"mode {args.mode!r} not implemented yet (M2/M4)")
+    if args.mode == "cascade":
+        return CascadePreprocessor(get_detector(args.det_model),
+                                   args.max_width, args.jpeg_quality,
+                                   keepalive_every=args.keepalive)
+    if args.mode == "privacy":
+        return PrivacyPreprocessor(get_detector(args.det_model),
+                                   args.max_width, keepalive_every=args.keepalive)
+    raise ValueError(f"mode {args.mode!r} not implemented")
 
 
 def build_source(args):
@@ -43,7 +63,7 @@ def build_source(args):
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="edge device A streamer")
-    ap.add_argument("--mode", default="raw", choices=["raw", "event"])  # cascade/privacy land in M4
+    ap.add_argument("--mode", default="raw", choices=["raw", "event", "cascade", "privacy"])
     ap.add_argument("--source", default="file", choices=["file", "camera"])
     ap.add_argument("--video", default="videos/curl_a.mp4")
     ap.add_argument("--camera", type=int, default=0)
@@ -58,6 +78,8 @@ def main() -> None:
     ap.add_argument("--q-max", type=int, default=85, help="event mode: strong-motion quality")
     ap.add_argument("--keepalive", type=int, default=0,
                     help="event mode: resend every N frames when idle (0=never)")
+    ap.add_argument("--det-model", default="models/detect.tflite",
+                    help="cascade/privacy: LiteRT person detector model")
     ap.add_argument("--loop", action="store_true", help="loop file source forever")
     ap.add_argument("--duration", type=float, default=0.0, help="stop after N seconds (0=never)")
     args = ap.parse_args()
@@ -108,13 +130,12 @@ def main() -> None:
                         new_mode = (req.get("arg") or {}).get("mode")
                         if new_mode == args.mode:
                             reply["result"] = "ok (already)"
-                        elif new_mode in ("raw", "event"):
+                        elif new_mode in VALID_MODES:
                             args.mode = new_mode
                             pre = build_preprocessor(args)   # fresh state
+                            reply["mode"] = new_mode          # reflect post-switch state
                             reply["result"] = "ok"
                             print(f"[edge] mode switched -> {new_mode}", flush=True)
-                        elif new_mode in VALID_MODES:
-                            reply["result"] = f"error: {new_mode} arrives in M4"
                         else:
                             reply["result"] = f"error: unknown mode {new_mode!r}"
                 except (ValueError, zmq.ZMQError) as e:

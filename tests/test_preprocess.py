@@ -1,8 +1,23 @@
-"""A-side preprocessor tests (M2 event mode)."""
+"""A-side preprocessor tests (M2 event mode, M4 cascade/privacy)."""
 
 import numpy as np
 
-from edge.preprocess import EventPreprocessor, RawPreprocessor
+from edge.preprocess import (CascadePreprocessor, EventPreprocessor,
+                             PrivacyPreprocessor, RawPreprocessor)
+
+
+class FakeDetector:
+    """Deterministic stand-in for the LiteRT person detector."""
+
+    def __init__(self, boxes_by_frame):
+        self.boxes_by_frame = boxes_by_frame
+        self.i = 0
+        self.last_ms = 3.0
+
+    def detect(self, frame):
+        boxes = self.boxes_by_frame[min(self.i, len(self.boxes_by_frame) - 1)]
+        self.i += 1
+        return boxes
 
 # module-level rng: a per-call seed would make two "noisy" frames pixel-identical
 # (diff == 0), silently testing nothing (N6)
@@ -65,3 +80,56 @@ def test_raw_preprocessor_passes_every_frame():
     assert all(o is not None for o in outs)
     assert all(o.jpeg_q == 70 for o in outs)
     assert outs[0].motion == 0.0
+
+
+def test_cascade_sends_only_when_person_present():
+    boxes = [[100, 100, 300, 400, 0.9]]        # person box (x1,y1,x2,y2,score)
+    det = FakeDetector([boxes] * 5 + [[]] * 30 + [boxes] * 3)
+    p = CascadePreprocessor(det, grace_frames=5)
+    outs = [p.process(gray_frame()) for _ in range(38)]
+    sent = [o for o in outs if o is not None]
+    # 5 with person + 5 grace + first of re-acquisition (grace re-arms on hit)
+    assert len(sent) == 5 + 5 + 3
+    assert all("persons" in o.extra for o in sent)
+    assert sent[0].extra["det_ms"] == 3.0
+
+
+def test_cascade_silence_after_grace():
+    det = FakeDetector([[]] * 40)
+    p = CascadePreprocessor(det, grace_frames=3)
+    outs = [p.process(gray_frame()) for _ in range(40)]
+    # only the very first frame goes out (self._i == 1 special case)
+    assert sum(o is not None for o in outs) == 1
+
+
+def test_privacy_crops_person_roi():
+    import cv2
+    det = FakeDetector([[[50, 40, 200, 440, 0.9]]])   # one frame, one 150x400 box
+    p = PrivacyPreprocessor(det)
+    out = p.process(gray_frame())
+    assert out is not None
+    x, y, w, h = out.extra["roi"]
+    assert x >= 0 and y >= 0 and 100 < w < 640       # padded, inside frame
+    img = cv2.imdecode(np.frombuffer(out.jpeg, np.uint8), cv2.IMREAD_COLOR)
+    assert abs(img.shape[1] - w) <= 2                # crop width == ROI width
+    assert abs(img.shape[0] - h) <= 2
+
+
+def test_privacy_no_person_goes_silent_except_keepalive():
+    det = FakeDetector([[]] * 30)
+    p = PrivacyPreprocessor(det, keepalive_every=5)
+    outs = [p.process(gray_frame()) for _ in range(20)]
+    # frames 5, 10, 15, 20 are keepalives (tiny black marker frames)
+    assert sum(o is not None for o in outs) == 4
+    ka = outs[4]
+    assert ka is not None and ka.extra["roi"] is None and ka.extra["persons"] == []
+
+
+def test_privacy_roi_smoothed():
+    det = FakeDetector([[[100, 100, 200, 300, 0.9]], [[300, 100, 400, 300, 0.9]]])
+    p = PrivacyPreprocessor(det, smooth=0.5)
+    p.process(gray_frame())
+    out = p.process(gray_frame())
+    x = out.extra["roi"][0]
+    # EMA 0.5: between 100-ish and 300-ish, strictly inside (100, 300)
+    assert 120 < x < 280

@@ -13,9 +13,11 @@ PI_DIR="${PI_DIR:-edgefit}"
 SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=8 -i "$PI_KEY")
 
 echo ">> syncing code to $PI_USER@$PI_HOST:~/$PI_DIR"
-ssh "${SSH_OPTS[@]}" "$PI_USER@$PI_HOST" "mkdir -p ~/$PI_DIR/scripts"
+ssh "${SSH_OPTS[@]}" "$PI_USER@$PI_HOST" "mkdir -p ~/$PI_DIR/scripts ~/$PI_DIR/models"
 scp "${SSH_OPTS[@]}" -r common edge requirements-edge.txt "$PI_USER@$PI_HOST:~/$PI_DIR/"
 scp "${SSH_OPTS[@]}" scripts/setup_pi.sh "$PI_USER@$PI_HOST:~/$PI_DIR/scripts/"
+[[ -f models/detect.tflite ]] && scp "${SSH_OPTS[@]}" models/detect.tflite \
+    "$PI_USER@$PI_HOST:~/$PI_DIR/models/" || echo "!! models/detect.tflite missing locally"
 
 if [[ ! -f videos/curl_a.mp4 ]]; then
     echo "!! local videos/curl_a.mp4 missing; skip asset sync (fine if already on Pi)"
