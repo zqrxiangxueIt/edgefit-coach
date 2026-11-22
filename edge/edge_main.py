@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import zmq
 
-from common.protocol import FrameHeader, encode_frame
+from common.protocol import VALID_MODES, FrameHeader, encode_frame
 from edge.preprocess import EventPreprocessor, RawPreprocessor
 from edge.sources import CameraSource, VideoFileSource
 
@@ -104,6 +104,19 @@ def main() -> None:
                     req = ctrl.recv_json()
                     reply = {"t_reply": time.time(), "mode": args.mode,
                              "seq": seq, "echo": req}
+                    if isinstance(req, dict) and req.get("cmd") == "set_mode":
+                        new_mode = (req.get("arg") or {}).get("mode")
+                        if new_mode == args.mode:
+                            reply["result"] = "ok (already)"
+                        elif new_mode in ("raw", "event"):
+                            args.mode = new_mode
+                            pre = build_preprocessor(args)   # fresh state
+                            reply["result"] = "ok"
+                            print(f"[edge] mode switched -> {new_mode}", flush=True)
+                        elif new_mode in VALID_MODES:
+                            reply["result"] = f"error: {new_mode} arrives in M4"
+                        else:
+                            reply["result"] = f"error: unknown mode {new_mode!r}"
                 except (ValueError, zmq.ZMQError) as e:
                     reply = {"t_reply": time.time(), "mode": args.mode,
                              "seq": seq, "error": f"bad request: {e}"}

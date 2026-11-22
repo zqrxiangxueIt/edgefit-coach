@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>EdgeFit Coach — 边缘协同健身教练</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<style>
+  :root { --bg:#0f1216; --panel:#181d24; --line:#262d37; --txt:#e8ecf1;
+          --dim:#8a94a3; --acc:#4cc38a; --warn:#f0b429; --bad:#e5484d; }
+  * { box-sizing:border-box; margin:0; }
+  body { background:var(--bg); color:var(--txt);
+         font-family:"Segoe UI",system-ui,sans-serif; padding:14px; }
+  .grid { display:grid; grid-template-columns: 1fr 320px; gap:14px; }
+  .card { background:var(--panel); border:1px solid var(--line);
+          border-radius:10px; padding:12px; }
+  h1 { font-size:17px; font-weight:600; }
+  .sub { color:var(--dim); font-size:12px; margin-top:2px; }
+  video-frame { }
+  #stage { position:relative; background:#000; border-radius:8px; overflow:hidden;
+           min-height:360px; display:flex; align-items:center; justify-content:center; }
+  #stage canvas { width:100%; height:auto; display:block; }
+  #stage .empty { color:var(--dim); font-size:13px; padding:60px 0; }
+  #modeBadge { position:absolute; top:10px; left:10px; background:#0009;
+               padding:4px 10px; border-radius:14px; font-size:12px;
+               font-family:Consolas,monospace; color:var(--acc); }
+  .modes { display:flex; gap:8px; margin-top:10px; }
+  .modes button { flex:1; padding:9px 0; border-radius:8px; border:1px solid var(--line);
+                  background:#11161d; color:var(--dim); font-size:13px; cursor:pointer; }
+  .modes button.active { background:var(--acc); color:#08130d; font-weight:700;
+                         border-color:var(--acc); }
+  .modes button:disabled { opacity:.45; cursor:not-allowed; }
+  .modes button.m4::after { content:" M4"; font-size:10px; opacity:.7; }
+  .big { font-size:56px; font-weight:800; line-height:1; color:var(--acc); }
+  .row { display:flex; justify-content:space-between; padding:5px 0;
+         border-bottom:1px dashed var(--line); font-size:13px; }
+  .row b { color:var(--txt); }
+  .row span { color:var(--dim); }
+  #phase { font-family:Consolas,monospace; color:var(--warn); }
+  #warnings { margin-top:10px; font-size:12px; color:var(--warn);
+              max-height:120px; overflow-y:auto; }
+  .charts { display:grid; grid-template-columns:repeat(3,1fr); gap:14px; margin-top:14px; }
+  .chart h3 { font-size:12px; color:var(--dim); font-weight:500; margin-bottom:6px; }
+  .chart canvas { height:110px !important; }
+  #log { font-family:Consolas,monospace; font-size:11.5px; color:var(--dim);
+         max-height:140px; overflow-y:auto; }
+  #log .rep { color:var(--acc); }
+  #linkState { font-size:12px; color:var(--dim); }
+</style>
+</head>
+<body>
+  <div class="grid">
+    <div>
+      <div class="card">
+        <div style="display:flex;justify-content:space-between;align-items:baseline">
+          <h1>🏋️ EdgeFit Coach <span class="sub">Pi 5 → PC · 边缘协同弯举教练</span></h1>
+          <span id="linkState">连接中…</span>
+        </div>
+        <div id="stage" style="margin-top:10px">
+          <span class="empty">等待视频流…（先启动树莓派端 edge_main）</span>
+          <canvas id="video" width="960" height="540" style="display:none"></canvas>
+          <div id="modeBadge">mode: -</div>
+        </div>
+        <div class="modes">
+          <button data-mode="raw">raw 全量</button>
+          <button data-mode="event">event 事件</button>
+          <button data-mode="cascade" class="m4" disabled>cascade 级联</button>
+          <button data-mode="privacy" class="m4" disabled>privacy 脱敏</button>
+        </div>
+      </div>
+      <div class="charts">
+        <div class="card chart"><h3>端到端延迟 p50 (ms)</h3><canvas id="cE2E"></canvas></div>
+        <div class="card chart"><h3>带宽 (KB/s)</h3><canvas id="cBw"></canvas></div>
+        <div class="card chart"><h3>接收帧率 / 丢帧</h3><canvas id="cFps"></canvas></div>
+      </div>
+    </div>
+    <div>
+      <div class="card">
+        <h1>训练面板</h1>
+        <div class="big" id="reps">0</div>
+        <div class="sub">弯举次数（全程 <span id="full">0</span> / 半程 <span id="half">0</span>）</div>
+        <div class="row"><span>当前相位</span><b id="phase">idle</b></div>
+        <div class="row"><span>幽灵计数被拦截</span><b id="suppressed">0</b></div>
+        <div class="row"><span>链路</span><b id="link">-</b></div>
+        <div class="row"><span>推理 (DML)</span><b id="infer">-</b></div>
+        <div class="row"><span>A端 JPEG质量 / 运动</span><b id="aq">-</b></div>
+        <div id="warnings"></div>
+      </div>
+      <div class="card" style="margin-top:14px">
+        <h1>事件日志</h1>
+        <div id="log"></div>
+      </div>
+    </div>
+  </div>
+
+<script>
+const HIST = 60;
+const mkChart = (id, color, extra={}) => new Chart(document.getElementById(id), {
+  type: "line",
+  data: { labels: [], datasets: [{ data: [], borderColor: color, borderWidth: 1.5,
+           pointRadius: 0, tension: .25, fill: false, ...extra }] },
+  options: { animation: false, plugins: { legend: { display: false } },
+             scales: { x: { display: false },
+                       y: { ticks: { color: "#8a94a3", font: { size: 9 } },
+                            grid: { color: "#262d37" } } } }
+});
+const cE2E = mkChart("cE2E", "#4cc38a");
+const cBw  = mkChart("cBw",  "#58a6ff");
+const cFps = mkChart("cFps", "#f0b429");
+const push = (chart, v) => { const d = chart.data.datasets[0].data;
+  d.push(v); if (d.length > HIST) d.shift(); chart.update("none"); };
+
+const $ = (id) => document.getElementById(id);
+const canvas = $("video"), ctx = canvas.getContext("2d");
+
+async function drawFrame(buf) {
+  const bm = await createImageBitmap(new Blob([buf], { type: "image/jpeg" }));
+  if (canvas.width !== bm.width) { canvas.width = bm.width; canvas.height = bm.height; }
+  ctx.drawImage(bm, 0, 0); bm.close();
+}
+
+let lastEvents = 0;
+function meta(m) {
+  $("reps").textContent = m.reps;
+  $("full").textContent = m.full;
+  $("half").textContent = m.half;
+  $("phase").textContent = m.phase;
+  $("suppressed").textContent = m.suppressed;
+  $("link").textContent = `${m.rx_fps} fps · ${m.kbps} KB/s · 丢${m.loss}`;
+  $("infer").textContent = m.infer_ms ? `${m.infer_ms} ms` : "-";
+  $("aq").textContent = `q${m.jpeg_q} / ${m.motion}`;
+  $("modeBadge").textContent = `mode: ${m.mode}`;
+  $("linkState").textContent = m.running ? "● 已连接" : "○ 等待帧…";
+  $("linkState").style.color = m.running ? "var(--acc)" : "var(--dim)";
+  $("warnings").innerHTML = (m.warnings || []).slice(-5)
+    .map(w => `<div>⚠ ${w}</div>`).join("");
+  document.querySelectorAll(".modes button[data-mode]").forEach(b => {
+    b.classList.toggle("active", b.dataset.mode === m.mode); });
+  if (m.e2e_ms != null) push(cE2E, m.e2e_ms);
+  push(cBw, m.kbps);
+  push(cFps, m.rx_fps);
+  if ((m.events || []).length !== lastEvents) {
+    lastEvents = (m.events || []).length;
+    const log = $("log");
+    m.events.slice(-8).forEach(e => {
+      const div = document.createElement("div");
+      div.className = "rep";
+      div.textContent = `rep ${e.index} [${e.side}] ${e.full ? "全程" : "半程"} min=${e.min_angle}°`;
+      log.prepend(div);
+    });
+    while (log.children.length > 20) log.lastChild.remove();
+  }
+}
+
+document.querySelectorAll(".modes button[data-mode]").forEach(btn => {
+  btn.addEventListener("click", async () => {
+    if (btn.disabled) return;
+    btn.textContent += " …";
+    try {
+      const r = await fetch(`/api/mode/${btn.dataset.mode}`, { method: "POST" });
+      const j = await r.json();
+      if (!r.ok) alert(j.detail || "切换失败");
+    } catch (e) { alert("切换失败: " + e); }
+    btn.textContent = btn.textContent.replace(" …", "");
+  });
+});
+
+const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
+ws.binaryType = "arraybuffer";
+ws.onmessage = (ev) => {
+  if (typeof ev.data === "string") { meta(JSON.parse(ev.data)); }
+  else {
+    const stage = $("stage");
+    if (canvas.style.display === "none") {
+      canvas.style.display = "block";
+      stage.querySelector(".empty").style.display = "none";
+    }
+    drawFrame(ev.data);
+  }
+};
+ws.onclose = () => { $("linkState").textContent = "✕ 已断开，刷新重连"; };
+</script>
+</body>
+</html>
