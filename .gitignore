@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+
+# Models & heavy assets (commit small ONNX later via git add -f if desired)
+models/*.pt
+runs/
+
+# Local artifacts
+*.log
+dist/
+build/
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

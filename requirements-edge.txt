@@ -1,0 +1,6 @@
+# A 端（树莓派 Pi 5 · Ubuntu 24.04 · Python 3.12 · 4GB RAM）
+# 注意：tflite-runtime 没有 py3.12 wheel，统一用官方继任者 ai-edge-litert
+opencv-python-headless>=4.10
+pyzmq>=26.0
+numpy>=1.26
+ai-edge-litert>=1.0      # cascade 模式的人形检测推理

@@ -1,0 +1,11 @@
+# B 端（边缘 PC，Windows/DirectML）
+ultralytics>=8.3.0        # 模型导出与基准对比
+onnxruntime-directml>=1.20  # AMD GPU 推理（RX 9070GRE）
+fastapi>=0.115
+uvicorn[standard]>=0.30
+pyzmq>=26.0
+opencv-python>=4.10
+numpy>=1.26
+
+# dev
+pytest>=8.0
