@@ -22,8 +22,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import zmq
 
 from common.protocol import FrameHeader, encode_frame
-from edge.preprocess import RawPreprocessor
+from edge.preprocess import EventPreprocessor, RawPreprocessor
 from edge.sources import CameraSource, VideoFileSource
+
+
+def build_preprocessor(args):
+    if args.mode == "raw":
+        return RawPreprocessor(args.sample_every, args.max_width, args.jpeg_quality)
+    if args.mode == "event":
+        return EventPreprocessor(args.max_width, args.q_min, args.q_max,
+                                 keepalive_every=args.keepalive)
+    raise ValueError(f"mode {args.mode!r} not implemented yet (M2/M4)")
 
 
 def build_source(args):
@@ -34,7 +43,7 @@ def build_source(args):
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="edge device A streamer")
-    ap.add_argument("--mode", default="raw", choices=["raw"])  # event/cascade/privacy land in M2/M4
+    ap.add_argument("--mode", default="raw", choices=["raw", "event"])  # cascade/privacy land in M4
     ap.add_argument("--source", default="file", choices=["file", "camera"])
     ap.add_argument("--video", default="videos/curl_a.mp4")
     ap.add_argument("--camera", type=int, default=0)
@@ -45,12 +54,16 @@ def main() -> None:
     ap.add_argument("--sample-every", type=int, default=1)
     ap.add_argument("--max-width", type=int, default=960)
     ap.add_argument("--jpeg-quality", type=int, default=75)
+    ap.add_argument("--q-min", type=int, default=55, help="event mode: idle-ish quality")
+    ap.add_argument("--q-max", type=int, default=85, help="event mode: strong-motion quality")
+    ap.add_argument("--keepalive", type=int, default=0,
+                    help="event mode: resend every N frames when idle (0=never)")
     ap.add_argument("--loop", action="store_true", help="loop file source forever")
     ap.add_argument("--duration", type=float, default=0.0, help="stop after N seconds (0=never)")
     args = ap.parse_args()
 
     src = build_source(args)
-    pre = RawPreprocessor(args.sample_every, args.max_width, args.jpeg_quality)
+    pre = build_preprocessor(args)
 
     ctx = zmq.Context()
     sock = ctx.socket(zmq.PUB)
