@@ -38,6 +38,7 @@ pipe = StreamingPipeline(CONNECT, MODEL, BACKEND, stats_every=1.0)
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     if RECORD:
+        Path(RECORD).parent.mkdir(parents=True, exist_ok=True)
         pipe.record_to(RECORD)
     pipe.start()
     yield
@@ -85,6 +86,7 @@ async def stream(ws: WebSocket):
                 "reps": meta.reps, "full": meta.full_reps,
                 "half": meta.half_reps, "suppressed": meta.suppressed,
                 "phase": meta.phase, "warnings": meta.warnings,
+                "last_frame_age": round(meta.last_frame_age, 2),
                 "rx_fps": round(meta.rx_fps, 1),
                 "a_eff_fps": round(meta.a_eff_fps, 1),
                 "kbps": round(meta.kbps, 1),

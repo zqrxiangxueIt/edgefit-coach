@@ -51,9 +51,14 @@ def set_mode(ep: str, mode: str) -> dict:
     s.connect(ep)
     try:
         s.send_json({"cmd": "set_mode", "arg": {"mode": mode}})
-        return s.recv_json()
+        rep = s.recv_json()
     finally:
         s.close()
+    if not str(rep.get("result", "")).startswith("ok"):
+        # an error reply must fail the cell loudly: silently benchmarking the
+        # OLD mode under the new label poisons the whole report
+        raise RuntimeError(f"set_mode({mode}) rejected: {rep}")
+    return rep
 
 
 def run_cell(connect: str, mode: str, rate_kbps: float, duration: float,
@@ -73,13 +78,13 @@ def run_cell(connect: str, mode: str, rate_kbps: float, duration: float,
     while time.time() - t_drain < 0.5 and sock.poll(50):
         sock.recv_multipart()
 
-    tokens = rate_kbps * 1024.0 if rate_kbps > 0 else float("inf")
-    last_refill = time.time()
-    t_end = last_refill + duration
+    tokens = 0.0 if rate_kbps > 0 else float("inf")   # EMPTY bucket: no free
+    last_refill = time.time()                          # burst, delivered<=rate
+    t_start = last_refill
+    t_end = t_start + duration
 
     n_sent = n_del = 0
     b_sent = b_del = 0
-    first_seq = last_seq = None
     e2e: deque = deque()
     a_proc: deque = deque()
     det_ms: deque = deque()
@@ -99,8 +104,6 @@ def run_cell(connect: str, mode: str, rate_kbps: float, duration: float,
 
         n_sent += 1
         b_sent += size
-        first_seq = first_seq or header.seq
-        last_seq = header.seq
         a_proc.append(header.a_proc_ms)
         if header.extra.get("det_ms"):
             det_ms.append(header.extra["det_ms"])
@@ -113,7 +116,7 @@ def run_cell(connect: str, mode: str, rate_kbps: float, duration: float,
             b_del += size
     sock.close(0)
 
-    wall = duration
+    wall = max(0.1, time.time() - t_start)   # true elapsed incl. poll gaps
     return {
         "mode": mode, "rate_kbps": rate_kbps,
         "sent_fps": round(n_sent / wall, 1),

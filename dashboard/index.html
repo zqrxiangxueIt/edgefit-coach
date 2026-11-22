@@ -114,11 +114,13 @@ const canvas = $("video"), ctx = canvas.getContext("2d");
 
 async function drawFrame(buf) {
   const bm = await createImageBitmap(new Blob([buf], { type: "image/jpeg" }));
-  if (canvas.width !== bm.width) { canvas.width = bm.width; canvas.height = bm.height; }
-  ctx.drawImage(bm, 0, 0); bm.close();
+  try {
+    if (canvas.width !== bm.width) { canvas.width = bm.width; canvas.height = bm.height; }
+    ctx.drawImage(bm, 0, 0);
+  } finally { bm.close(); }   // N3: never leak the ImageBitmap
 }
 
-let lastEvents = 0;
+let lastIdx = 0;   // highest rep index already logged (B2: index dedup)
 function meta(m) {
   $("reps").textContent = m.reps;
   $("full").textContent = m.full;
@@ -129,8 +131,9 @@ function meta(m) {
   $("infer").textContent = m.infer_ms ? `${m.infer_ms} ms` : "-";
   $("aq").textContent = `q${m.jpeg_q} / ${m.motion}`;
   $("modeBadge").textContent = `mode: ${m.mode}`;
-  $("linkState").textContent = m.running ? "● 已连接" : "○ 等待帧…";
-  $("linkState").style.color = m.running ? "var(--acc)" : "var(--dim)";
+  const fresh = m.last_frame_age != null && m.last_frame_age < 3;
+  $("linkState").textContent = fresh ? "● 已连接" : "○ 等待帧…";
+  $("linkState").style.color = fresh ? "var(--acc)" : "var(--dim)";
   $("warnings").innerHTML = (m.warnings || []).slice(-5)
     .map(w => `<div>⚠ ${w}</div>`).join("");
   document.querySelectorAll(".modes button[data-mode]").forEach(b => {
@@ -138,15 +141,17 @@ function meta(m) {
   if (m.e2e_ms != null) push(cE2E, m.e2e_ms);
   push(cBw, m.kbps);
   push(cFps, m.rx_fps);
-  if ((m.events || []).length !== lastEvents) {
-    lastEvents = (m.events || []).length;
+  const evs = m.events || [];
+  const last = evs[evs.length - 1];
+  if (last && last.index !== lastIdx) {
     const log = $("log");
-    m.events.slice(-8).forEach(e => {
+    evs.filter(e => e.index > lastIdx).forEach(e => {
       const div = document.createElement("div");
       div.className = "rep";
       div.textContent = `rep ${e.index} [${e.side}] ${e.full ? "全程" : "半程"} min=${e.min_angle}°`;
       log.prepend(div);
     });
+    lastIdx = last.index;
     while (log.children.length > 20) log.lastChild.remove();
   }
 }
@@ -154,30 +159,40 @@ function meta(m) {
 document.querySelectorAll(".modes button[data-mode]").forEach(btn => {
   btn.addEventListener("click", async () => {
     if (btn.disabled) return;
-    btn.textContent += " …";
+    btn.disabled = true;                       // N4: real guard during request
     try {
       const r = await fetch(`/api/mode/${btn.dataset.mode}`, { method: "POST" });
       const j = await r.json();
       if (!r.ok) alert(j.detail || "切换失败");
     } catch (e) { alert("切换失败: " + e); }
-    btn.textContent = btn.textContent.replace(" …", "");
+    finally { btn.disabled = false; }
   });
 });
 
-const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
-ws.binaryType = "arraybuffer";
-ws.onmessage = (ev) => {
-  if (typeof ev.data === "string") { meta(JSON.parse(ev.data)); }
-  else {
-    const stage = $("stage");
-    if (canvas.style.display === "none") {
-      canvas.style.display = "block";
-      stage.querySelector(".empty").style.display = "none";
+let retry = 0;
+function connect() {
+  const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
+  ws.binaryType = "arraybuffer";
+  ws.onopen = () => { retry = 0; };
+  ws.onmessage = (ev) => {
+    if (typeof ev.data === "string") { meta(JSON.parse(ev.data)); }
+    else {
+      const stage = $("stage");
+      if (canvas.style.display === "none") {
+        canvas.style.display = "block";
+        stage.querySelector(".empty").style.display = "none";
+      }
+      drawFrame(ev.data);
     }
-    drawFrame(ev.data);
-  }
-};
-ws.onclose = () => { $("linkState").textContent = "✕ 已断开，刷新重连"; };
+  };
+  ws.onclose = () => {   // S1: auto-reconnect with capped backoff
+    retry = Math.min(retry + 1, 4);
+    $("linkState").textContent = `↻ 重连中(${retry})…`;
+    $("linkState").style.color = "var(--warn)";
+    setTimeout(connect, 1000 * 2 ** (retry - 1));
+  };
+}
+connect();
 </script>
 </body>
 </html>

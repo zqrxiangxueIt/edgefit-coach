@@ -86,6 +86,7 @@ class CameraSource(Source):
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
         self.cap.set(cv2.CAP_PROP_FPS, fps)
         self._fps = fps
+        self._index = index
         self._warned = False
         # verify what the driver actually negotiated (N5): a silent YUY2
         # fallback would saturate the USB 2.0 link and drop frames
@@ -102,10 +103,14 @@ class CameraSource(Source):
         return self._fps
 
     def read(self):
-        """Retry transient V4L2 failures (USB reset); give up only after 10
-        consecutive failures (~0.5s) -- a single EIO must not stop the
-        stream permanently (N5)."""
-        for _ in range(10):
+        """Retry transient V4L2 failures (USB reset), with one full reopen
+        before giving up -- a dead handle must not stop the stream for good."""
+        for attempt in range(20):
+            if attempt == 10:   # half the budget gone: try a fresh handle
+                print("[camera] reopening device ...", flush=True)
+                self.cap.release()
+                self.cap.open(self._index)
+                self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
             ok, frame = self.cap.read()
             if ok:
                 if self._warned:

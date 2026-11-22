@@ -223,7 +223,7 @@ class PrivacyPreprocessor:
         self.smooth = smooth
         self.lost_reset = lost_reset
         self.keepalive_every = keepalive_every
-        self._roi: tuple[int, int, int, int] | None = None   # x, y, w, h
+        self._roi: tuple[float, float, float, float] | None = None   # x, y, w, h (EMA-smoothed floats)
         self._lost = 0
         self._i = 0
 

@@ -73,11 +73,13 @@ def main() -> None:
     ap.add_argument("--bind", default="tcp://0.0.0.0:5555")
     ap.add_argument("--sample-every", type=int, default=1)
     ap.add_argument("--max-width", type=int, default=960)
-    ap.add_argument("--jpeg-quality", type=int, default=75)
+    ap.add_argument("--jpeg-quality", type=int, default=75,
+                    help="raw/cascade JPEG quality (privacy is fixed at 82: the "
+                         "ROI crop is the zoom target and deserves the bits)")
     ap.add_argument("--q-min", type=int, default=55, help="event mode: idle-ish quality")
     ap.add_argument("--q-max", type=int, default=85, help="event mode: strong-motion quality")
     ap.add_argument("--keepalive", type=int, default=0,
-                    help="event mode: resend every N frames when idle (0=never)")
+                    help="event/cascade/privacy: resend every N idle frames (0=never)")
     ap.add_argument("--det-model", default="models/detect.tflite",
                     help="cascade/privacy: LiteRT person detector model")
     ap.add_argument("--loop", action="store_true", help="loop file source forever")
@@ -122,6 +124,7 @@ def main() -> None:
             # Malformed input must NOT kill the streamer (S1), and REP
             # requires a recv->send pair even on error or it wedges forever.
             if ctrl.poll(0):
+                switched = False
                 try:
                     req = ctrl.recv_json()
                     reply = {"t_reply": time.time(), "mode": args.mode,
@@ -131,11 +134,21 @@ def main() -> None:
                         if new_mode == args.mode:
                             reply["result"] = "ok (already)"
                         elif new_mode in VALID_MODES:
+                            old_mode = args.mode
                             args.mode = new_mode
-                            pre = build_preprocessor(args)   # fresh state
-                            reply["mode"] = new_mode          # reflect post-switch state
-                            reply["result"] = "ok"
-                            print(f"[edge] mode switched -> {new_mode}", flush=True)
+                            try:
+                                new_pre = build_preprocessor(args)
+                            except Exception as e:   # missing model/litert, bad
+                                args.mode = old_mode  # model: reply, never die
+                                reply["result"] = (f"error: cannot switch to "
+                                                   f"{new_mode}: {e}")
+                            else:
+                                pre = new_pre
+                                switched = True
+                                reply["mode"] = new_mode
+                                reply["result"] = "ok"
+                                print(f"[edge] mode switched -> {new_mode}",
+                                      flush=True)
                         else:
                             reply["result"] = f"error: unknown mode {new_mode!r}"
                 except (ValueError, zmq.ZMQError) as e:
@@ -145,6 +158,10 @@ def main() -> None:
                     ctrl.send_json(reply)
                 except zmq.ZMQError:
                     pass
+                if switched:
+                    # the current frame was produced by the OLD preprocessor:
+                    # drop it instead of shipping it under the new mode label
+                    continue
             if pf is None:
                 continue
             seq += 1

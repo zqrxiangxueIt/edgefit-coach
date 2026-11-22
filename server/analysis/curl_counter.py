@@ -298,5 +298,7 @@ class CurlCounter:
                 swing = self.torso.verdict(side, tracker.rep_started_t, t)
                 if swing:
                     self.stats.warnings.append(f"[{side}] rep {ev.index}: {swing}")
+            if len(self.stats.warnings) > 50:      # hours-long sessions (N9)
+                del self.stats.warnings[:-50]
             tracker.rep_started_t = None
         return events

@@ -19,17 +19,18 @@ scp "${SSH_OPTS[@]}" scripts/setup_pi.sh "$PI_USER@$PI_HOST:~/$PI_DIR/scripts/"
 [[ -f models/detect.tflite ]] && scp "${SSH_OPTS[@]}" models/detect.tflite \
     "$PI_USER@$PI_HOST:~/$PI_DIR/models/" || echo "!! models/detect.tflite missing locally"
 
-if [[ ! -f videos/curl_a.mp4 ]]; then
-    echo "!! local videos/curl_a.mp4 missing; skip asset sync (fine if already on Pi)"
-else
-    echo ">> syncing test video (9.5MB)"
+if compgen -G "videos/*.mp4" > /dev/null; then
+    echo ">> syncing test videos (curl_a/curl_b/synth: ~46MB first time)"
     ssh "${SSH_OPTS[@]}" "$PI_USER@$PI_HOST" "mkdir -p ~/$PI_DIR/videos"
-    scp "${SSH_OPTS[@]}" videos/curl_a.mp4 "$PI_USER@$PI_HOST:~/$PI_DIR/videos/"
+    scp "${SSH_OPTS[@]}" videos/*.mp4 "$PI_USER@$PI_HOST:~/$PI_DIR/videos/"
+else
+    echo "!! no local videos/*.mp4; skip asset sync (fine if already on Pi)"
 fi
 
 if [[ "${1:-}" == "--run" ]]; then
     shift
-    echo ">> starting edge_main.py with args: $*"
+    echo ">> killing any previous streamer, then starting edge_main.py with args: $*"
+    ssh "${SSH_OPTS[@]}" "$PI_USER@$PI_HOST" "pkill -f edge.edge_main 2>/dev/null; sleep 1"
     ssh "${SSH_OPTS[@]}" "$PI_USER@$PI_HOST" "cd ~/$PI_DIR && .venv/bin/python -u -m edge.edge_main $*"
 else
     echo "deploy_pi: synced. First time on this Pi? run setup first:"

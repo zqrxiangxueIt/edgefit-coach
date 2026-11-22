@@ -31,7 +31,30 @@ class PersonDetector:
         self.it = Interpreter(model_path=model_path, num_threads=num_threads)
         self.it.allocate_tensors()
         self.inp = self.it.get_input_details()[0]
-        self.outs = {d["name"]: d["index"] for d in self.it.get_output_details()}
+        # Prefer the canonical SSD postprocess names; fall back to positional
+        # mapping (boxes, classes, scores, count) so a renamed export fails
+        # HERE with a clear message instead of mid-stream with a KeyError.
+        details = self.it.get_output_details()
+        names = {d["name"] for d in details}
+        canonical = ("TFLite_Detection_PostProcess:01",   # boxes [1,N,4]
+                     "TFLite_Detection_PostProcess:02",   # classes [1,N]
+                     "TFLite_Detection_PostProcess:03",   # scores  [1,N]
+                     "TFLite_Detection_PostProcess:04")   # count   [1]
+        if all(n in names for n in canonical):
+            idx = {d["name"]: d["index"] for d in details}
+            self.i_boxes, self.i_classes = idx[canonical[0]], idx[canonical[1]]
+            self.i_scores, self.i_count = idx[canonical[2]], idx[canonical[3]]
+        elif len(details) == 4:
+            print("[cascade] WARNING: unexpected output names, "
+                  "using positional mapping", flush=True)
+            self.i_boxes = details[0]["index"]
+            self.i_classes = details[1]["index"]
+            self.i_scores = details[2]["index"]
+            self.i_count = details[3]["index"]
+        else:
+            raise ValueError(
+                f"unexpected detector outputs ({len(details)} tensors): "
+                "need the standard SSD postprocess head (boxes/classes/scores/count)")
         self.score_thr = score_thr
         self.scale, self.zp = self.inp["quantization"]
         if not self.scale:
@@ -52,16 +75,20 @@ class PersonDetector:
         self.it.set_tensor(self.inp["index"], q[None])
         self.it.invoke()
 
-        boxes = self.it.get_tensor(self.outs["TFLite_Detection_PostProcess:01"])[0]
-        classes = self.it.get_tensor(self.outs["TFLite_Detection_PostProcess:02"])[0]
-        scores = self.it.get_tensor(self.outs["TFLite_Detection_PostProcess:03"])[0]
-        n = int(self.it.get_tensor(self.outs["TFLite_Detection_PostProcess:04"])[0])
+        boxes = self.it.get_tensor(self.i_boxes)[0]
+        classes = self.it.get_tensor(self.i_classes)[0]
+        scores = self.it.get_tensor(self.i_scores)[0]
+        n = int(self.it.get_tensor(self.i_count)[0])
 
         out = []
         for i in range(n):
             if int(classes[i]) != PERSON_CLASS or scores[i] < self.score_thr:
                 continue
             y1, x1, y2, x2 = boxes[i]
-            out.append([x1 * w, y1 * h, x2 * w, y2 * h, float(scores[i])])
+            # SSD postprocess does not clip: 34% of raw boxes exceed the frame
+            # by a pixel or two -- clamp before handing them to consumers
+            out.append([max(0.0, x1 * w), max(0.0, y1 * h),
+                        min(float(w), x2 * w), min(float(h), y2 * h),
+                        float(scores[i])])
         self.last_ms = (time.perf_counter() - t0) * 1000
         return out

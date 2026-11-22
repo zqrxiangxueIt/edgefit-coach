@@ -11,7 +11,10 @@ Header fields
 seq         int     monotonic frame id assigned by A
 ts_capture  float   A-side capture timestamp, seconds on A's clock
 mode        str     raw | event | cascade | privacy
-w, h        int     source resolution in pixels
+w, h        int     source resolution in pixels. NOTE: the payload may be
+                    smaller than w x h -- privacy mode sends a person-ROI
+                    crop (see extra.roi for its source-pixel coords) and its
+                    no-person keepalive is a 64x64 black marker frame.
 jpeg_q      int     encoder quality actually used for this frame
 motion      float   normalized motion score of the frame, 0..1
 a_proc_ms   float   milliseconds A spent on this frame (preprocess + encode)

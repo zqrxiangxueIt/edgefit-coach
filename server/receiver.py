@@ -10,6 +10,7 @@ The streaming loop itself lives in server/pipeline.py -- the web dashboard
 from __future__ import annotations
 
 import argparse
+import sys
 import time
 from pathlib import Path
 
@@ -31,33 +32,40 @@ def main() -> None:
 
     pipe = StreamingPipeline(args.connect, args.model, args.backend,
                              clock_offset=args.clock_offset,
-                             stats_every=min(args.stats_every, 2.0))
+                             stats_every=args.stats_every)
     if args.record:
         Path(args.record).parent.mkdir(parents=True, exist_ok=True)
         pipe.record_to(args.record)
     pipe.start()
 
     t0 = time.time()
+    last_print = 0.0
     try:
         while pipe.is_alive():
             if args.duration and time.time() - t0 > args.duration:
                 print("\n[server] duration reached")
                 break
-            time.sleep(args.stats_every)
-            s = pipe.status()
-            e2e = f"{s.e2e_p50_ms:5.0f} ms" if s.e2e_p50_ms else "  n/a"
-            print(f"[server] rx {s.rx_fps:5.1f} fps  {s.kbps:7.1f} KB/s  "
-                  f"loss {s.loss}  a_eff {s.a_eff_fps:5.1f} fps  "
-                  f"infer p50 {s.infer_p50_ms:5.1f} / p95 {s.infer_p95_ms:5.1f} ms  "
-                  f"e2e p50 {e2e}  reps={s.reps} (suppressed {s.suppressed}) "
-                  f"mode={s.mode}", flush=True)
-            if pipe.error:
-                raise pipe.error
+            time.sleep(0.2)   # fine-grained: duration accuracy vs stats cadence
+            if time.time() - last_print >= args.stats_every:
+                last_print = time.time()
+                s = pipe.status()
+                if s.frames == 0:
+                    continue          # pipeline still connecting: skip the
+                                     # misleading all-zeros line
+                e2e = f"{s.e2e_p50_ms:5.0f} ms" if s.e2e_p50_ms else "  n/a"
+                print(f"[server] rx {s.rx_fps:5.1f} fps  {s.kbps:7.1f} KB/s  "
+                      f"loss {s.loss}  a_eff {s.a_eff_fps:5.1f} fps  "
+                      f"infer p50 {s.infer_p50_ms:5.1f} / p95 {s.infer_p95_ms:5.1f} ms  "
+                      f"e2e p50 {e2e}  reps={s.reps} (suppressed {s.suppressed}) "
+                      f"mode={s.mode}", flush=True)
     except KeyboardInterrupt:
         print("\n[server] interrupted")
     finally:
         pipe.stop()
         pipe.join(timeout=5)
+        if pipe.error is not None:   # died mid-run: say so, fail loudly (S4)
+            print(f"[server] pipeline died: {pipe.error}", file=sys.stderr)
+            sys.exit(1)
         s = pipe.status()
         print(f"[server] total reps: {s.reps} "
               f"(full {s.full_reps} / half {s.half_reps})")

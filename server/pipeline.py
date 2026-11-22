@@ -78,6 +78,8 @@ class PipelineStatus:
     infer_p50_ms: float = 0.0
     infer_p95_ms: float = 0.0
     e2e_p50_ms: float = 0.0    # 0 == unavailable (no clock offset)
+    last_frame_age: float = 1e9  # s since last frame; distinguishes "thread
+                                 # alive" from "link delivering" (N1)
     offset_ms: float = 0.0
     frames: int = 0
     jpeg_q: int = 0
@@ -98,7 +100,7 @@ class StreamingPipeline(threading.Thread):
         self._status = PipelineStatus()
         self._latest_jpeg: bytes | None = None
         self._events: deque = deque(maxlen=50)   # recent RepEvents (dicts)
-        self._stop = threading.Event()
+        self._stop_evt = threading.Event()  # NOT _stop: shadows Thread._stop() and breaks join()
         self._record_writer = None
         self._record_path = ""
         self.error: Exception | None = None
@@ -122,7 +124,7 @@ class StreamingPipeline(threading.Thread):
         self._record_path = path
 
     def stop(self) -> None:
-        self._stop.set()
+        self._stop_evt.set()
 
     def control_endpoint(self) -> str:
         host = self.connect.split("//")[1].rsplit(":", 1)[0]
@@ -152,9 +154,21 @@ class StreamingPipeline(threading.Thread):
             self._run()
         except Exception as e:  # surface to frontends instead of dying silently
             self.error = e
+            raise
+        finally:
+            # always release resources, including the exception path (S2):
+            # a leaked SUB socket / un-finalized mp4 (no moov atom) otherwise
+            w = getattr(self, "_writer", None)
+            if w is not None:
+                w.release()
+                self._writer = None
+            sk = getattr(self, "_sock", None)
+            if sk is not None:
+                sk.close(0)
+                self._sock = None
             with self._lock:
                 self._status.running = False
-            raise
+            print("[pipeline] stopped", flush=True)
 
     def _run(self) -> None:
         offset = self.clock_offset
@@ -177,6 +191,7 @@ class StreamingPipeline(threading.Thread):
         sock.setsockopt(zmq.SUBSCRIBE, b"frame")
         sock.setsockopt(zmq.RCVHWM, 10)
         sock.connect(self.connect)
+        self._sock = sock          # released by run()'s finally on ANY exit
         print(f"[pipeline] connecting {self.connect} backend={self.backend}",
               flush=True)
 
@@ -195,14 +210,17 @@ class StreamingPipeline(threading.Thread):
         with self._lock:
             self._status.running = True
 
-        while not self._stop.is_set():
+        while not self._stop_evt.is_set():
             if not sock.poll(500):
                 with self._lock:
                     self._status.running = True   # alive, just quiet
                 continue
             parts = sock.recv_multipart()
             t_recv = time.time()
-            header, payload = decode_frame(parts)
+            try:
+                header, payload = decode_frame(parts)
+            except ValueError:
+                continue          # one malformed frame must not kill the loop
             frame = cv2.imdecode(np.frombuffer(payload, np.uint8), cv2.IMREAD_COLOR)
             if frame is None:
                 continue
@@ -256,9 +274,17 @@ class StreamingPipeline(threading.Thread):
                     writer = cv2.VideoWriter(
                         self._record_path, cv2.VideoWriter_fourcc(*"mp4v"),
                         est, (annotated.shape[1], annotated.shape[0]))
-                    print(f"[pipeline] recording at {est:.1f} fps "
-                          f"-> {self._record_path}", flush=True)
-                writer.write(annotated)
+                    if not writer.isOpened():
+                        print(f"[pipeline] ERROR: cannot open writer for "
+                              f"{self._record_path}", flush=True)
+                        self._record_path = ""
+                        writer = None
+                    else:
+                        self._writer = writer
+                        print(f"[pipeline] recording at {est:.1f} fps "
+                              f"-> {self._record_path}", flush=True)
+                if writer is not None:
+                    writer.write(annotated)
 
             now = time.time()
             if now - t_stat >= self.stats_every:
@@ -288,12 +314,21 @@ class StreamingPipeline(threading.Thread):
                     s.frames = frames_total
                     s.jpeg_q = header.jpeg_q
                     s.motion = header.motion
+                    s.last_frame_age = time.time() - t_recv
                 t_stat, n_stat, b_stat = now, 0, 0
                 first_seq = None
 
-        if writer is not None:
-            writer.release()
-        sock.close(0)
+            with self._lock:
+                self._status.last_frame_age = time.time() - t_recv
+
+        # final refresh so a stopped pipeline reports its true totals (the
+        # window tick may have happened before the last reps)
         with self._lock:
-            self._status.running = False
-        print("[pipeline] stopped", flush=True)
+            self._status.reps = counter.stats.reps
+            self._status.full_reps = counter.stats.full_reps
+            self._status.half_reps = counter.stats.half_reps
+            self._status.suppressed = counter.stats.phantom_reps_suppressed
+            self._status.phase = counter.phase.value
+            self._status.warnings = list(counter.stats.warnings)[-8:]
+
+        # normal-path cleanup lives in run()'s finally (S2)

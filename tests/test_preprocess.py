@@ -155,3 +155,25 @@ def test_privacy_goes_dark_after_window():
     tail = outs[55:]
     assert all(o is None or o.extra["roi"] is None for o in tail)
     assert any(o is not None and o.extra["roi"] is None for o in tail)  # keepalive fired
+
+
+def test_privacy_roi_clamped_at_frame_edge():
+    """人贴画面边缘时，padding 后的 ROI 必须被夹回画面内。"""
+    import cv2
+    det = FakeDetector([[[0, 0, 640, 100, 0.9]]])    # person touching top edge
+    p = PrivacyPreprocessor(det, pad_frac=0.5)
+    out = p.process(gray_frame())
+    x, y, w, h = out.extra["roi"]
+    assert x >= 0 and y >= 0 and x + w <= 640 and y + h <= 480
+
+
+def test_privacy_black_keepalive_reports_source_resolution():
+    """黑帧标记的 header w/h 必须仍是源分辨率（协议语义）。"""
+    import cv2
+    det = FakeDetector([[]] * 30)
+    p = PrivacyPreprocessor(det, keepalive_every=5)
+    outs = [p.process(gray_frame()) for _ in range(10)]
+    ka = next(o for o in outs if o is not None)
+    assert (ka.w, ka.h) == (640, 480)
+    img = cv2.imdecode(np.frombuffer(ka.jpeg, np.uint8), cv2.IMREAD_COLOR)
+    assert img.shape[:2] == (64, 64)                 # payload is the marker
