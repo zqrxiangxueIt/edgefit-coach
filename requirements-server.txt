@@ -1,8 +1,14 @@
 # B 端（边缘 PC，Windows/DirectML）
-# ⚠ 依赖顺序坑：ultralytics-platform 会连带安装 CPU 版 onnxruntime，
-#    它会遮蔽 onnxruntime-directml 的 DmlExecutionProvider。
-#    安装顺序必须是：先装其它，最后装 onnxruntime-directml；切勿再装 onnxruntime。
-ultralytics>=8.3.0        # 模型导出与基准对比
+# ⚠⚠ 两个 onnxruntime 遮蔽坑（实测踩过）：
+#   1. 安装顺序：ultralytics-platform 连带装 CPU 版 onnxruntime 时会覆盖
+#      onnxruntime-directml 的包文件 -> 必须最后安装 onnxruntime-directml。
+#   2. 运行时：ultralytics 的 predict() 对 ONNX 会 check_requirements
+#      ("onnxruntime")（按 dist 名匹配，不认 -directml 变体）并自动安装
+#      CPU 版！任何使用 ultralytics 运行时的脚本必须先
+#      os.environ.setdefault("YOLO_AUTOINSTALL", "false")（见
+#      scripts/export_models.py）。
+#   中招恢复：pip install --force-reinstall --no-deps onnxruntime-directml
+ultralytics>=8.3.0        # 模型导出与基准对比（注意上方第 2 条坑）
 fastapi>=0.115
 uvicorn[standard]>=0.30
 pyzmq>=26.0

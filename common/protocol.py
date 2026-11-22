@@ -37,6 +37,7 @@ TOPIC_FRAME = "frame"
 TOPIC_CONTROL = "ctl"  # B -> A commands (mode switch, throttle), JSON only
 
 VALID_MODES = ("raw", "event", "cascade", "privacy")
+VALID_CMDS = ("set_mode", "set_rate_limit", "ping")
 
 
 @dataclass
@@ -54,6 +55,8 @@ class FrameHeader:
     def __post_init__(self) -> None:
         if self.mode not in VALID_MODES:
             raise ValueError(f"unknown mode {self.mode!r}, expected one of {VALID_MODES}")
+        if not isinstance(self.extra, dict):
+            raise ValueError(f"extra must be a dict, got {type(self.extra).__name__}")
 
 
 def encode_frame(header: FrameHeader, payload: bytes = b"") -> list[bytes]:
@@ -91,4 +94,7 @@ def encode_control(msg: ControlMessage) -> bytes:
 
 
 def decode_control(raw: bytes) -> ControlMessage:
-    return ControlMessage(**json.loads(raw.decode("utf-8")))
+    msg = ControlMessage(**json.loads(raw.decode("utf-8")))
+    if msg.cmd not in VALID_CMDS:
+        raise ValueError(f"unknown cmd {msg.cmd!r}, expected one of {VALID_CMDS}")
+    return msg

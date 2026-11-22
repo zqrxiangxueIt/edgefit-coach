@@ -67,10 +67,14 @@ def main() -> None:
     if not cap.isOpened():
         sys.exit(f"cannot open {args.video}")
     fps = cap.get(cv2.CAP_PROP_FPS) or 25
+    show_every = max(1, int(args.show_every))     # guard: N=0 would ZeroDivision
     n_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
-    writer = cv2.VideoWriter(args.out, cv2.VideoWriter_fourcc(*"mp4v"), fps,
-                             (int(cap.get(3)), int(cap.get(4))))
+    # only 1/N frames reach the writer -> scale fps so playback speed is true
+    writer = cv2.VideoWriter(args.out, cv2.VideoWriter_fourcc(*"mp4v"),
+                             fps / show_every, (int(cap.get(3)), int(cap.get(4))))
+    if not writer.isOpened():
+        sys.exit(f"cannot open video writer for {args.out}")
 
     engine = PoseEngine(args.model, backend=args.backend)
     smoother = KeypointSmoother()
@@ -97,7 +101,7 @@ def main() -> None:
             kps = smoother.update(np.zeros((17, 3), np.float32))
             counter.update(kps)
 
-        if i % args.show_every == 0:
+        if i % show_every == 0:
             if results:
                 frame = draw(frame, results[0], counter, kps)
             writer.write(frame)
@@ -105,7 +109,8 @@ def main() -> None:
 
     dt = time.perf_counter() - t0
     print(f"\nframes={i} wall={dt:.1f}s ({i/dt:.1f} fps end-to-end on {args.backend})")
-    print(f"inference: mean {np.mean(infer_ms):.1f} ms  p95 {np.percentile(infer_ms, 95):.1f} ms")
+    if infer_ms:
+        print(f"inference: mean {np.mean(infer_ms):.1f} ms  p95 {np.percentile(infer_ms, 95):.1f} ms")
     print(f"RESULT: {counter.stats.reps} reps "
           f"({counter.stats.full_reps} full / {counter.stats.half_reps} half)")
     for w in counter.stats.warnings:

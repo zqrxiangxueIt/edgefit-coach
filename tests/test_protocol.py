@@ -30,3 +30,16 @@ def test_control_roundtrip():
     raw = encode_control(ControlMessage(cmd="set_mode", arg={"mode": "cascade"}))
     msg = decode_control(raw)
     assert msg.cmd == "set_mode" and msg.arg["mode"] == "cascade"
+
+
+def test_extra_null_rejected():
+    # "extra": null must not decode into extra=None (would blow up far away)
+    raw = (b'{"seq":1,"ts_capture":0.0,"mode":"raw","w":1,"h":1,"extra":null}')
+    parts = [b"frame", raw, b""]
+    with pytest.raises(ValueError):
+        decode_frame(parts)
+
+
+def test_unknown_control_cmd_rejected():
+    with pytest.raises(ValueError):
+        decode_control(b'{"cmd":"reboot","arg":null,"ts":0.0}')

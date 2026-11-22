@@ -1,9 +1,10 @@
-"""YOLO11-pose ONNX engine: letterbox preprocess, decode + NMS postprocess.
+"""YOLO-pose ONNX engine: letterbox preprocess, decode + NMS postprocess.
 
 Expects models exported from Ultralytics with a static 640x640 input and the
 standard pose head output [1, 56, N] (4 box + 1 score + 17*3 keypoints).
-(yolo26-pose is NMS-free with a different head; support lands with the
-model bake-off in M4.)
+Verified compatible with both yolo11n-pose and yolo26n-pose exports
+(cross-checked against ultralytics' own predict output, review B); the
+shape guard in detect() rejects any future export that changes the layout.
 """
 
 from __future__ import annotations
@@ -51,6 +52,10 @@ class PoseEngine:
         x = cv2.cvtColor(x, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
         x = x.transpose(2, 0, 1)[None]                       # (1, 3, 640, 640)
         out = self.sess.run(None, {self.input_name: x})[0]   # (1, 56, N)
+        if out.ndim != 3 or out.shape[1] != STRIDE:
+            raise ValueError(
+                f"unexpected pose head layout {tuple(out.shape)}, "
+                f"expected (1, {STRIDE}, N) -- wrong or incompatible export?")
         return self._postprocess(out[0], scale, pad_x, pad_y)
 
     # ------------------------------------------------------------ internals --
