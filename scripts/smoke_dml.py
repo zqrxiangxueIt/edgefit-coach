@@ -3,9 +3,10 @@
 Usage:
     .venv/Scripts/python scripts/smoke_dml.py [model.onnx]
 
-Loads the pose ONNX model, creates a DirectML (or fallback CPU) session,
-runs 50 warmup + 100 timed inferences on a random 640x640 input, and prints
-the effective providers and per-frame latency.
+Creates the session through backends.create_session (strict by default) so
+this script can never silently report CPU numbers as "DML" -- it raises
+instead.  Runs 50 warmup + 100 timed inferences on a random 640x640 input
+and prints per-frame latency.
 """
 
 import sys
@@ -13,20 +14,16 @@ import time
 from pathlib import Path
 
 import numpy as np
-import onnxruntime as ort
 
-MODEL = Path(sys.argv[1] if len(sys.argv) > 1 else "models/yolo11n-pose.onnx")
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from server.inference.backends import create_session
 
 
 def main() -> None:
-    print(f"onnxruntime {ort.__version__}, available providers:")
-    for p in ort.get_available_providers():
-        print(f"  - {p}")
+    model = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("models/yolo11n-pose.onnx")
+    sess = create_session(model, "dml")
 
-    providers = ["DmlExecutionProvider"] if "DmlExecutionProvider" in ort.get_available_providers() else ["CPUExecutionProvider"]
-    print(f"\nusing: {providers}")
-
-    sess = ort.InferenceSession(str(MODEL), providers=providers)
     inp = sess.get_inputs()[0]
     name, shape = inp.name, [d if isinstance(d, int) else 1 for d in inp.shape]
     print(f"model input: {name} {shape}")

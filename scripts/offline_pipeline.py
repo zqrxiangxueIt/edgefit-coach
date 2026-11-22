@@ -69,7 +69,10 @@ def main() -> None:
     fps = cap.get(cv2.CAP_PROP_FPS) or 25
     show_every = max(1, int(args.show_every))     # guard: N=0 would ZeroDivision
     n_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+    try:
+        Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        sys.exit(f"cannot create output directory for {args.out}: {e}")
     # only 1/N frames reach the writer -> scale fps so playback speed is true
     writer = cv2.VideoWriter(args.out, cv2.VideoWriter_fourcc(*"mp4v"),
                              fps / show_every, (int(cap.get(3)), int(cap.get(4))))

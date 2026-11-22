@@ -69,13 +69,16 @@ def encode_frame(header: FrameHeader, payload: bytes = b"") -> list[bytes]:
 
 
 def decode_frame(parts: list[bytes]) -> tuple[FrameHeader, bytes]:
-    """Parse a received multipart message. Raises on malformed input."""
+    """Parse a received multipart message. Raises ValueError on malformed input."""
     if len(parts) != 3:
         raise ValueError(f"expected 3 parts, got {len(parts)}")
     topic, raw_header, payload = parts
     if topic.decode("utf-8", "replace") != TOPIC_FRAME:
         raise ValueError(f"unexpected topic {topic!r}")
-    header = FrameHeader(**json.loads(raw_header.decode("utf-8")))
+    try:
+        header = FrameHeader(**json.loads(raw_header.decode("utf-8")))
+    except TypeError as e:          # unknown JSON field -> uniform ValueError
+        raise ValueError(f"malformed frame header: {e}") from e
     return header, payload
 
 
@@ -88,13 +91,20 @@ class ControlMessage:
     arg: Optional[dict] = None
     ts: float = field(default_factory=time.time)
 
+    def __post_init__(self) -> None:
+        if self.arg is not None and not isinstance(self.arg, dict):
+            raise ValueError(f"arg must be a dict or None, got {type(self.arg).__name__}")
+
 
 def encode_control(msg: ControlMessage) -> bytes:
     return json.dumps(asdict(msg), separators=(",", ":")).encode("utf-8")
 
 
 def decode_control(raw: bytes) -> ControlMessage:
-    msg = ControlMessage(**json.loads(raw.decode("utf-8")))
+    try:
+        msg = ControlMessage(**json.loads(raw.decode("utf-8")))
+    except TypeError as e:
+        raise ValueError(f"malformed control message: {e}") from e
     if msg.cmd not in VALID_CMDS:
         raise ValueError(f"unknown cmd {msg.cmd!r}, expected one of {VALID_CMDS}")
     return msg
