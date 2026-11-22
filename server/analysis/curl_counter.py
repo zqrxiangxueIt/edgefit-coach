@@ -4,9 +4,13 @@ Pipeline position: raw keypoints -> One-Euro smoothing (see filters.py) ->
 CurlCounter.update() per frame.
 
 Both arms are tracked independently (alternating dumbbell curls are a real
-training pattern); a rep from either arm counts.  A resting arm holds a
-roughly constant angle and never oscillates through the hysteresis band,
-so it cannot produce phantom reps.
+training pattern); a rep from either arm counts.  A resting arm is guarded
+by an activity gate: its angle hysteresis machine can still be fooled when
+occlusion "teleports" the wrist keypoint to a fake curled pose, so a rep
+only counts if the wrist actually travelled a plausible arc path during
+the rep (>= 1.2x upper-arm length, with per-frame movement capped so a
+single teleport cannot fake a journey).  Suppressed phantoms are tallied
+in ``SessionStats.phantom_reps_suppressed``.
 
 Per-arm rep logic (v1, dumbbell bicep curl):
     * phase EXTENDED: elbow angle >= up_angle   (arm straight, rep boundary;
@@ -51,8 +55,40 @@ class SessionStats:
     reps: int = 0
     full_reps: int = 0
     half_reps: int = 0
+    phantom_reps_suppressed: int = 0
     last_rep: Optional[RepEvent] = None
     warnings: list = field(default_factory=list)
+
+
+class _ActivityGate:
+    """Rejects phantom reps from a resting arm whose wrist keypoint was
+    teleported by occlusion/misdetection.
+
+    A genuine curl sweeps the wrist along a long arc over many frames; a
+    misdetection jumps the wrist once to a wrong spot where it then sits
+    still.  We accumulate the wrist path with a per-frame cap so a single
+    teleport contributes little, and require a minimum total path (relative
+    to the upper-arm length, which is stable while the wrist is not).
+    """
+
+    def __init__(self, cap_frac: float = 0.4, min_path_frac: float = 1.2) -> None:
+        self.cap_frac = cap_frac
+        self.min_path_frac = min_path_frac
+        self.path = 0.0
+        self._prev: Optional[tuple[float, float]] = None
+
+    def reset(self) -> None:
+        self.path = 0.0
+        self._prev = None
+
+    def add(self, wrist_xy: tuple[float, float], upper_arm_len: float) -> None:
+        if self._prev is not None:
+            delta = float(np.hypot(wrist_xy[0] - self._prev[0], wrist_xy[1] - self._prev[1]))
+            self.path += min(delta, self.cap_frac * upper_arm_len)
+        self._prev = wrist_xy
+
+    def passed(self, upper_arm_len: float) -> bool:
+        return self.path >= self.min_path_frac * upper_arm_len
 
 
 class _ArmTracker:
@@ -68,11 +104,13 @@ class _ArmTracker:
         self.phase = Phase.IDLE
         self._debounce_left = debounce
         self._min_angle_in_rep = 180.0
+        self.gate = _ActivityGate()
 
     def lost(self) -> None:
         self.phase = Phase.IDLE
         self._min_angle_in_rep = 180.0
         self._debounce_left = self.debounce
+        self.gate.reset()
 
     def step(self, angle: float, t: float) -> Optional[float]:
         """Advance one frame.
@@ -104,6 +142,7 @@ class _ArmTracker:
         self._debounce_left = self.debounce
         if target is Phase.EXTENDED:
             self._min_angle_in_rep = 180.0        # start measuring the next rep
+            self.gate.reset()                     # and re-arm the activity gate
         return completed_min
 
 
@@ -154,7 +193,18 @@ class CurlCounter:
                 continue
             # track best flexion before step() may reset it on rep completion
             tracker._min_angle_in_rep = min(tracker._min_angle_in_rep, angle)
+            # feed the wrist-travel gate (evaluated BEFORE step(): completing a
+            # rep re-arms the gate, and we need this rep's verdict first)
+            sh, el, wr = LEFT_ARM if side == "left" else RIGHT_ARM
+            upper_arm = float(np.hypot(*(kps[sh, :2] - kps[el, :2])))
+            tracker.gate.add((float(kps[wr, 0]), float(kps[wr, 1])), max(upper_arm, 1.0))
+            gate_ok = tracker.gate.passed(upper_arm) if upper_arm >= 5.0 else True
             rep_min = tracker.step(angle, t)
+            if rep_min is not None and not gate_ok:
+                # angle claims a rep but the wrist never actually travelled:
+                # resting arm with teleported keypoint -> phantom, suppressed
+                self.stats.phantom_reps_suppressed += 1
+                continue
             if rep_min is not None:
                 full = rep_min <= self.full_rep_angle
                 self.stats.reps += 1

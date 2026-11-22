@@ -81,6 +81,30 @@ def test_lost_person_resets_to_idle():
     assert events == [] and c.stats.reps == 0
 
 
+def test_hanging_arm_phantom_suppressed():
+    """单臂场景：垂下的右臂手腕被误检"搬运"到屈臂姿势（遮挡伪影），
+    手腕并无真实位移轨迹 -> 活动门控应吞掉这次幽灵计数。"""
+    c = CurlCounter()
+    seq = [170.0] * 8 + [40.0] * 12 + [170.0] * 8   # 静止垂臂 + 静止假屈臂 + 回垂
+    events = feed(c, seq)
+    assert events == []
+    assert c.stats.reps == 0
+    assert c.stats.phantom_reps_suppressed >= 1
+
+
+def test_real_single_arm_rep_passes_gate():
+    """真实单臂弯举（手腕沿圆弧扫过）必须照常计数——门控不能误伤。"""
+    c = CurlCounter()
+    feed(c, [170.0] * 8)
+    seq = []
+    for _ in range(3):
+        seq += sweep(170, 40, 6) + [40.0] * 4 + sweep(40, 170, 6) + [170.0] * 4
+    events = feed(c, seq)
+    assert len(events) == 3
+    assert c.stats.phantom_reps_suppressed == 0
+    assert all(e.full for e in events)
+
+
 def test_threshold_validation():
     import pytest
     with pytest.raises(ValueError):
