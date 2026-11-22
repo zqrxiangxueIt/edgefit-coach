@@ -27,7 +27,11 @@ _SSH = ["ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new",
 # NOTE the [.] trick in pgrep/pkill patterns: a plain "edge_main" pattern
 # also matches THIS ssh command's own remote shell cmdline, which can kill
 # the shell mid-pkill and leak the real process (observed once).
+# The pre-kill guards against a manually-started streamer (demo checklist
+# used to ssh-start one): the second instance would die on the ZMQ bind
+# and the pgrep would then see only the first -- reporting false success.
 _EDGE_START = (
+    f"pkill -f 'edge[.]edge_main'; sleep 0.5; "
     f"cd ~/{PI_DIR} && (nohup .venv/bin/python -u -m edge.edge_main "
     f"--mode event --source camera --bind tcp://0.0.0.0:5555 --keepalive 30 "
     f"> edge.log 2>&1 &) && sleep 2 && "
@@ -78,6 +82,8 @@ class PowerManager:
             return {"power": "off", "detail": f"edge failed to start: {out}"}
         pipe = StreamingPipeline(self.connect, self.model, self.backend,
                                  stats_every=1.0, session=self.session)
+        if getattr(self, "record_path", ""):
+            pipe.record_to(self.record_path)   # S2: EDGE_RECORD was dead code
         pipe.start()
         with self._lock:
             self._pipe = pipe

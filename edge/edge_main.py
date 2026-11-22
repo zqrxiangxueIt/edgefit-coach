@@ -158,6 +158,13 @@ def main() -> None:
     seq = 0
     t_start = time.time()
     t_stat, n_stat, b_stat = time.time(), 0, 0
+    # optional uplink budget (set_rate_limit, KB/s; 0 = unlimited): frames
+    # that do not fit the token bucket are never sent -- the closed-loop
+    # seed for link-adaptive streaming (AccMPEG-style, see docs/benchmarks)
+    rate_kbps = 0.0
+    tokens = 0.0
+    last_token_t = time.time()
+    rate_dropped = 0
     try:
         while True:
             if grabber.error is not None:
@@ -185,7 +192,8 @@ def main() -> None:
                     req = ctrl.recv_json()
                     reply = {"t_reply": time.time(), "mode": args.mode,
                              "seq": seq, "echo": req}
-                    if isinstance(req, dict) and req.get("cmd") == "set_mode":
+                    cmd = req.get("cmd") if isinstance(req, dict) else None
+                    if cmd == "set_mode":
                         new_mode = (req.get("arg") or {}).get("mode")
                         if new_mode == args.mode:
                             reply["result"] = "ok (already)"
@@ -207,6 +215,17 @@ def main() -> None:
                                       flush=True)
                         else:
                             reply["result"] = f"error: unknown mode {new_mode!r}"
+                    elif cmd == "set_rate_limit":
+                        kbps = (req.get("arg") or {}).get("kbps", 0.0)
+                        try:
+                            rate_kbps = max(0.0, float(kbps))
+                            tokens = min(tokens, rate_kbps * 1024.0)
+                            reply["result"] = f"ok (rate={rate_kbps} KB/s)"
+                            print(f"[edge] rate limit -> {rate_kbps} KB/s",
+                                  flush=True)
+                        except (TypeError, ValueError):
+                            reply["result"] = "error: bad kbps"
+                    # else: ping (and unknown cmds) keep the plain echo reply
                 except (ValueError, zmq.ZMQError) as e:
                     reply = {"t_reply": time.time(), "mode": args.mode,
                              "seq": seq, "error": f"bad request: {e}"}
@@ -220,6 +239,17 @@ def main() -> None:
                     continue
             if pf is None:
                 continue
+            # uplink budget: drop frames the (simulated) link cannot carry
+            now_t = time.time()
+            if rate_kbps > 0:
+                tokens = min(rate_kbps * 1024.0,
+                             tokens + (now_t - last_token_t) * rate_kbps * 1024.0)
+            last_token_t = now_t
+            if rate_kbps > 0 and len(pf.jpeg) > tokens:
+                rate_dropped += 1
+                continue
+            if rate_kbps > 0:
+                tokens -= len(pf.jpeg)
             seq += 1
             header = FrameHeader(seq=seq, ts_capture=t_capture, mode=args.mode,
                                  w=pf.w, h=pf.h, jpeg_q=pf.jpeg_q,
@@ -233,9 +263,12 @@ def main() -> None:
             now = time.time()
             if now - t_stat >= 5.0:
                 dt = now - t_stat
+                rate_txt = f"  budget-dropped {rate_dropped}" if rate_kbps > 0 else ""
                 print(f"[edge] sent {n_stat/dt:5.1f} fps  {b_stat/dt/1024:7.1f} KB/s  "
-                      f"a_proc {pf.a_proc_ms:.1f} ms  seq={seq}", flush=True)
+                      f"a_proc {pf.a_proc_ms:.1f} ms  seq={seq}{rate_txt}",
+                      flush=True)
                 t_stat, n_stat, b_stat = now, 0, 0
+                rate_dropped = 0
     except KeyboardInterrupt:
         print("\n[edge] interrupted")
     finally:

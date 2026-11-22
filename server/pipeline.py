@@ -99,6 +99,7 @@ class StreamingPipeline(threading.Thread):
         self.session = session            # TrainingSession or None (survives
         self._reset_req = threading.Event()  # power cycles via PowerManager)
         self._last_enc_t = 0.0            # lazy JPEG re-encode throttle
+        self._multi_t = 0.0               # multi-person warning throttle
         self._lock = threading.Lock()
         self._status = PipelineStatus()
         self._latest_jpeg: bytes | None = None
@@ -273,6 +274,13 @@ class StreamingPipeline(threading.Thread):
             frames_total += 1
             n_stat += 1
             b_stat += len(payload)
+            # consume the A-side NN output (cascade/privacy): a second person
+            # in frame breaks the single-person counting assumption
+            persons = header.extra.get("persons")
+            if persons and len(persons) > 1 and time.time() - self._multi_t > 5.0:
+                self._multi_t = time.time()
+                print("[pipeline] WARNING: 多人画面，计数可能混淆（单目标假设）",
+                      flush=True)
             if first_seq is None:
                 first_seq = header.seq
             last_seq = header.seq

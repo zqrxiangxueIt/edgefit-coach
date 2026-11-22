@@ -21,6 +21,7 @@ from pathlib import Path
 import uvicorn
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -46,6 +47,11 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="EdgeFit Coach", lifespan=lifespan)
+
+# vendored static assets (Chart.js) -- no CDN: the recording machine may be
+# offline and dead charts would sink the demo video
+_VENDOR = Path(__file__).resolve().parents[1] / "dashboard" / "vendor"
+app.mount("/vendor", StaticFiles(directory=str(_VENDOR)), name="vendor")
 
 
 @app.get("/")
@@ -127,6 +133,22 @@ async def set_mode(mode: str):
     if str(reply.get("result", "")).startswith("error"):
         raise HTTPException(409, reply["result"])
     return {"mode": reply.get("mode"), "result": reply.get("result")}
+
+
+@app.post("/api/rate_limit/{kbps}")
+async def set_rate_limit(kbps: float):
+    """Simulate a constrained uplink ON DEVICE A (closed-loop seed)."""
+    if kbps < 0:
+        raise HTTPException(400, "kbps must be >= 0")
+    pipe = power.pipeline()
+    if pipe is None or not pipe.is_alive():
+        raise HTTPException(409, "system is powered off")
+    reply = await asyncio.get_running_loop().run_in_executor(
+        None, pipe.send_control, {"cmd": "set_rate_limit",
+                                  "arg": {"kbps": kbps}})
+    if reply is None:
+        raise HTTPException(504, "edge control channel timeout")
+    return {"result": reply.get("result")}
 
 
 @app.get("/api/status")
