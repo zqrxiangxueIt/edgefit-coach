@@ -12,6 +12,7 @@ import subprocess
 import threading
 
 from server.pipeline import StreamingPipeline
+from server.session import TrainingSession
 
 PI_USER = os.environ.get("PI_USER", "saltz")
 PI_HOST = os.environ.get("PI_HOST", "100.93.84.79")
@@ -51,6 +52,8 @@ class PowerManager:
         self.connect, self.model, self.backend = connect, model, backend
         self._lock = threading.Lock()
         self._pipe: StreamingPipeline | None = None
+        # survives power cycles: a training plan outlives a stream pause
+        self.session = TrainingSession()
 
     # ---------------------------------------------------------------- api --
 
@@ -74,11 +77,18 @@ class PowerManager:
         if "RUNNING" not in out:
             return {"power": "off", "detail": f"edge failed to start: {out}"}
         pipe = StreamingPipeline(self.connect, self.model, self.backend,
-                                 stats_every=1.0)
+                                 stats_every=1.0, session=self.session)
         pipe.start()
         with self._lock:
             self._pipe = pipe
         return {"power": "on", "detail": "edge RUNNING, pipeline started"}
+
+    def reset_stats(self) -> dict:
+        pipe = self.pipeline()
+        if pipe is None or not pipe.is_alive():
+            return {"detail": "system is powered off"}
+        pipe.request_reset()
+        return {"detail": "reset requested"}
 
     def off(self) -> dict:
         with self._lock:

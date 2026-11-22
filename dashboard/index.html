@@ -58,10 +58,11 @@
             <button id="powerBtn" style="padding:6px 16px;border-radius:8px;border:1px solid var(--line);background:#11161d;color:var(--dim);font-size:13px;cursor:pointer">⏻ 开启系统</button>
           </span>
         </div>
-        <div id="stage" style="margin-top:10px">
+        <div id="stage" style="margin-top:10px;position:relative">
           <span class="empty" id="standbyMsg">系统已关停 · 点击右上角 ⏻ 开启</span>
           <canvas id="video" width="960" height="540" style="display:none"></canvas>
           <div id="modeBadge" style="display:none">mode: -</div>
+          <div id="sessOverlay" style="display:none;position:absolute;inset:0;display:none;align-items:center;justify-content:center;flex-direction:column;background:#000a;font-size:72px;font-weight:800;color:var(--acc);text-shadow:0 2px 12px #000"></div>
         </div>
         <div class="modes">
           <button data-mode="raw">raw 全量</button>
@@ -78,6 +79,24 @@
     </div>
     <div>
       <div class="card">
+        <h1>训练计划</h1>
+        <div class="row"><span>组数 × 每组次数</span>
+          <b><input id="inSets" type="number" value="3" min="1" max="20" style="width:36px;background:#11161d;color:var(--txt);border:1px solid var(--line);border-radius:4px;padding:2px 4px">
+            组 ×
+            <input id="inReps" type="number" value="8" min="1" max="100" style="width:36px;background:#11161d;color:var(--txt);border:1px solid var(--line);border-radius:4px;padding:2px 4px"> 个</b></div>
+        <div class="row"><span>组间休息（秒）</span>
+          <b><input id="inRest" type="number" value="60" min="5" max="600" style="width:52px;background:#11161d;color:var(--txt);border:1px solid var(--line);border-radius:4px;padding:2px 4px"> s</b></div>
+        <div class="modes" style="margin-top:10px">
+          <button id="btnStart" style="background:var(--acc);color:#08130d;font-weight:700">▶ 开始训练</button>
+          <button id="btnStop">⏹ 结束</button>
+        </div>
+        <div class="modes" style="margin-top:8px">
+          <button id="btnSkip">⏭ 跳过休息</button>
+          <button id="btnReset">🗑 清零计数</button>
+        </div>
+        <div id="sessState" style="margin-top:8px;font-size:13px;color:var(--dim)">自由模式：计数持续累计</div>
+      </div>
+      <div class="card" style="margin-top:14px">
         <h1>训练面板</h1>
         <div class="big" id="reps">0</div>
         <div class="sub">弯举次数（全程 <span id="full">0</span> / 半程 <span id="half">0</span>）</div>
@@ -138,9 +157,39 @@ function setPower(on) {
   }
 }
 
+function renderSession(s) {
+  const ov = $("sessOverlay"), txt = $("sessState");
+  if (!s || s.phase === "idle") {
+    ov.style.display = "none";
+    txt.textContent = "自由模式：计数持续累计";
+    return;
+  }
+  if (s.phase === "countdown") {
+    ov.style.display = "flex";
+    ov.textContent = Math.ceil(s.remaining_sec);
+    txt.textContent = `即将开始 第1/${s.sets_total}组 · 每组${s.reps_per_set}个`;
+  } else if (s.phase === "set") {
+    ov.style.display = "none";
+    txt.textContent = `💪 第${s.set_index}/${s.sets_total}组 · 本组 ${s.reps_in_set}/${s.reps_per_set}`;
+  } else if (s.phase === "rest") {
+    ov.style.display = "flex";
+    ov.innerHTML = `<div style="font-size:26px;color:var(--dim)">组间休息</div>
+                    <div>${Math.ceil(s.remaining_sec)}s</div>
+                    <div style="font-size:16px;color:var(--dim);margin-top:8px">下一组 ${s.set_index+1}/${s.sets_total} · 可点"跳过休息"</div>`;
+    txt.textContent = `休息中 · 已完成 ${s.set_reps.join(" + ")} 个`;
+  } else if (s.phase === "done") {
+    ov.style.display = "flex";
+    ov.innerHTML = `<div style="font-size:26px">🎉 全部完成</div>
+                    <div style="font-size:20px;color:var(--txt);margin-top:10px">
+                    ${s.set_reps.join(" + ")} = ${s.set_reps.reduce((a,b)=>a+b,0)} 个 · 用时 ${Math.round(s.elapsed_sec)}s</div>`;
+    txt.textContent = `✅ 训练完成，用时 ${Math.round(s.elapsed_sec)}s`;
+  }
+}
+
 function meta(m) {
   if (m.power === "off") { setPower(false); return; }
   setPower(true);
+  renderSession(m.session);
   $("standbyMsg").style.display = "none";
   $("modeBadge").style.display = "block";
   $("reps").textContent = m.reps;
@@ -176,6 +225,19 @@ function meta(m) {
     while (log.children.length > 20) log.lastChild.remove();
   }
 }
+
+async function post(url) {
+  const r = await fetch(url, { method: "POST" });
+  const j = await r.json();
+  if (!r.ok) alert(j.detail || "操作失败");
+  return j;
+}
+
+$("btnStart").addEventListener("click", () => post(
+  `/api/session/start?sets=${+$("inSets").value || 3}&reps=${+$("inReps").value || 8}&rest=${+$("inRest").value || 60}`));
+$("btnStop").addEventListener("click", () => post("/api/session/stop"));
+$("btnSkip").addEventListener("click", () => post("/api/session/skip_rest"));
+$("btnReset").addEventListener("click", () => post("/api/stats/reset"));
 
 $("powerBtn").addEventListener("click", async () => {
   const btn = $("powerBtn");

@@ -61,6 +61,41 @@ async def power_off():
     return await asyncio.get_running_loop().run_in_executor(None, power.off)
 
 
+@app.post("/api/session/start")
+async def session_start(sets: int = 3, reps: int = 8, rest: float = 60.0):
+    try:
+        pipe = power.pipeline()
+        if pipe is None or not pipe.is_alive():
+            r = await asyncio.get_running_loop().run_in_executor(None, power.on)
+            if r["power"] != "on":
+                raise HTTPException(502, f"cannot power on: {r['detail']}")
+            pipe = power.pipeline()
+        total = pipe.status().reps if pipe else 0
+        power.session.start(total, sets=sets, reps_per_set=reps, rest_sec=rest)
+        return {"detail": "session started", **power.session.snapshot()}
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/session/stop")
+async def session_stop():
+    power.session.stop()
+    return {"detail": "session stopped"}
+
+
+@app.post("/api/session/skip_rest")
+async def session_skip_rest():
+    power.session.skip_rest()
+    return {"detail": "ok"}
+
+
+@app.post("/api/stats/reset")
+async def stats_reset():
+    power.session.stop()
+    return await asyncio.get_running_loop().run_in_executor(
+        None, power.reset_stats)
+
+
 @app.get("/api/power")
 async def power_state():
     return power.state()
@@ -104,6 +139,7 @@ async def stream(ws: WebSocket):
             payload = pipe.latest_jpeg()
             await ws.send_text(json.dumps({
                 "power": "on",
+                "session": power.session.snapshot(),
                 "mode": meta.mode,
                 "reps": meta.reps, "full": meta.full_reps,
                 "half": meta.half_reps, "suppressed": meta.suppressed,

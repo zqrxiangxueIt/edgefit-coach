@@ -89,13 +89,15 @@ class PipelineStatus:
 class StreamingPipeline(threading.Thread):
     def __init__(self, connect: str, model: str = "models/yolo11n-pose.onnx",
                  backend: str = "dml", clock_offset: float | None = None,
-                 stats_every: float = 2.0) -> None:
+                 stats_every: float = 2.0, session=None) -> None:
         super().__init__(daemon=True)
         self.connect = connect
         self.model = model
         self.backend = backend
         self.clock_offset = clock_offset
         self.stats_every = stats_every
+        self.session = session            # TrainingSession or None (survives
+        self._reset_req = threading.Event()  # power cycles via PowerManager)
         self._lock = threading.Lock()
         self._status = PipelineStatus()
         self._latest_jpeg: bytes | None = None
@@ -125,6 +127,10 @@ class StreamingPipeline(threading.Thread):
 
     def stop(self) -> None:
         self._stop_evt.set()
+
+    def request_reset(self) -> None:
+        """Reset counter/smoother/session at the next frame (free mode)."""
+        self._reset_req.set()
 
     def control_endpoint(self) -> str:
         host = self.connect.split("//")[1].rsplit(":", 1)[0]
@@ -230,23 +236,36 @@ class StreamingPipeline(threading.Thread):
             infer_ms.append((time.perf_counter() - t0) * 1000)
 
             annotated = None
+            events: list = []
             if results:
                 kps = smoother.update(results[0].keypoints)
                 events = counter.update(kps)
-                for ev in events:
-                    with self._lock:
-                        self._events.append({
-                            "index": ev.index, "side": ev.side, "full": ev.full,
-                            "min_angle": round(ev.min_angle, 1),
-                            "t": round(ev.t - t_begin, 2)})
-                    print(f"  [rep {ev.index}][{ev.side}] full={ev.full} "
-                          f"min_angle={ev.min_angle:.0f}", flush=True)
                 annotated = draw(frame, results[0], counter, kps)
             else:
                 zeros = np.zeros((17, 3), np.float32)
                 smoother.update(zeros)
                 counter.update(zeros)
                 annotated = frame
+
+            # session advances on EVERY frame (wall-clock transitions like
+            # countdown->set must run even with nobody in view)
+            if self.session is not None:
+                self.session.update(counter.stats.reps, events)
+            if self._reset_req.is_set():
+                self._reset_req.clear()
+                smoother = KeypointSmoother()
+                counter = CurlCounter()
+                events = []
+                if self.session is not None:
+                    self.session.stop()
+            for ev in events:
+                with self._lock:
+                    self._events.append({
+                        "index": ev.index, "side": ev.side, "full": ev.full,
+                        "min_angle": round(ev.min_angle, 1),
+                        "t": round(ev.t - t_begin, 2)})
+                print(f"  [rep {ev.index}][{ev.side}] full={ev.full} "
+                      f"min_angle={ev.min_angle:.0f}", flush=True)
 
             # ---- metrics bookkeeping ----
             frames_total += 1
