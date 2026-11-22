@@ -76,8 +76,12 @@ class EventPreprocessor:
     def __init__(self, max_width: int = 960,
                  q_min: int = 55, q_max: int = 85,
                  motion_ref: float = 6.0,      # raw diff mean that maps to 1.0
-                 idle_thr: float = 0.8,        # raw diff mean below this = idle
+                 idle_thr: float = 3.0,        # raw diff mean below this = idle
                  keepalive_every: int = 0) -> None:
+        # idle_thr calibrated on the real Global Shutter Camera @720p:
+        # noise floor p50=0.87 p99=1.78 max=2.18 (15s static scene, 451 frames);
+        # 3.0 keeps a ~40% margin over worst-case sensor noise.  Synthetic
+        # noise-free test fixtures pass their own lower idle_thr.
         self.max_width = max_width
         self.q_min, self.q_max = q_min, q_max
         self.motion_ref = motion_ref

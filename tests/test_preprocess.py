@@ -28,7 +28,7 @@ def test_static_scene_goes_silent():
 
 
 def test_motion_wakes_stream_with_higher_quality():
-    p = EventPreprocessor(q_min=50, q_max=90)
+    p = EventPreprocessor(q_min=50, q_max=90, idle_thr=0.5)
     p.process(gray_frame(box_x=100))
     slow = p.process(gray_frame(box_x=110))   # small step
     fast = p.process(gray_frame(box_x=180))   # big step
@@ -49,7 +49,7 @@ def test_quality_bounds_respected():
 
 
 def test_keepalive_reinjects_static_frame():
-    p = EventPreprocessor(keepalive_every=3)
+    p = EventPreprocessor(keepalive_every=3, idle_thr=0.5)
     p.process(gray_frame(box_x=50))
     assert p.process(gray_frame(box_x=50)) is None   # i=2 idle
     ka = p.process(gray_frame(box_x=50))             # i=3 keepalive

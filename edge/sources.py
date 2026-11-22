@@ -64,13 +64,19 @@ class VideoFileSource(Source):
 
 
 class CameraSource(Source):
-    """USB webcam via V4L2/OpenCV; falls back to camera index 0."""
+    """USB webcam via V4L2/OpenCV.
+
+    MJPG is requested explicitly: OpenCV may otherwise negotiate uncompressed
+    YUY2, which at 720p30 (~44 MB/s) saturates the USB 2.0 link and drops
+    frames.  Compressed MJPG leaves plenty of headroom.
+    """
 
     def __init__(self, index: int = 0, width: int = 1280, height: int = 720,
                  fps: int = 30) -> None:
         self.cap = cv2.VideoCapture(index)
         if not self.cap.isOpened():
             raise RuntimeError(f"cannot open camera {index}")
+        self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
         self.cap.set(cv2.CAP_PROP_FPS, fps)

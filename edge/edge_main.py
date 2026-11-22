@@ -92,6 +92,14 @@ def main() -> None:
                 break
             frame, t_capture = item
             pf = pre.process(frame)
+            # serve control pings on EVERY iteration: in event mode idle
+            # frames are skipped (pf is None) and a ping would otherwise
+            # starve until the next keepalive -- poisoning clock-offset
+            # estimates exactly when the link is quiet
+            if ctrl.poll(0):
+                req = ctrl.recv_json()
+                ctrl.send_json({"t_reply": time.time(),
+                                "mode": args.mode, "seq": seq, "echo": req})
             if pf is None:
                 continue
             seq += 1
@@ -101,10 +109,6 @@ def main() -> None:
                                  extra=pf.extra)
             msg = encode_frame(header, pf.jpeg)
             sock.send_multipart(msg)
-            if ctrl.poll(0):                    # serve clock pings / control
-                req = ctrl.recv_json()
-                ctrl.send_json({"t_reply": time.time(),
-                                "mode": args.mode, "seq": seq, "echo": req})
             n_stat += 1
             b_stat += len(pf.jpeg)
 
