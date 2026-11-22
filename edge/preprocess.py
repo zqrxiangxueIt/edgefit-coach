@@ -162,7 +162,9 @@ class CascadePreprocessor:
     """
 
     def __init__(self, detector, max_width: int = 960, jpeg_q: int = 75,
-                 grace_frames: int = 10, keepalive_every: int = 0) -> None:
+                 grace_frames: int = 25, keepalive_every: int = 0) -> None:
+        # grace ~0.8s at 30fps: bridges intermittent detector dropouts on
+        # close-range partial bodies without keeping a stale stream alive
         self.det = detector
         self.max_width = max_width
         self.jpeg_q = jpeg_q
@@ -209,7 +211,11 @@ class PrivacyPreprocessor:
 
     def __init__(self, detector, max_width: int = 960, jpeg_q: int = 82,
                  pad_frac: float = 0.30, smooth: float = 0.65,
-                 lost_reset: int = 15, keepalive_every: int = 0) -> None:
+                 lost_reset: int = 45, keepalive_every: int = 0) -> None:
+        # lost_reset ~1.5s at 30fps: while inside the window after a missed
+        # detection we keep streaming the LIVE frame cropped at the last ROI
+        # (the person is usually still there, the detector just blinked);
+        # only after the window expires does the mode go dark again.
         self.det = detector
         self.max_width = max_width
         self.jpeg_q = jpeg_q

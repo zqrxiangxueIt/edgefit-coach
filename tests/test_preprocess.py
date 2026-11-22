@@ -133,3 +133,25 @@ def test_privacy_roi_smoothed():
     x = out.extra["roi"][0]
     # EMA 0.5: between 100-ish and 300-ish, strictly inside (100, 300)
     assert 120 < x < 280
+
+
+def test_privacy_survives_detector_blink():
+    """检测器间歇漏检（人还在镜头前）时，ROI 内实时画面必须持续，不得黑屏。"""
+    det = FakeDetector([[[50, 40, 200, 440, 0.9]]] * 5 + [[]] * 20)
+    p = PrivacyPreprocessor(det, lost_reset=45)
+    outs = [p.process(gray_frame()) for _ in range(25)]
+    # all 25 frames must transmit: 5 with detection + 20 persisted live crops
+    assert all(o is not None for o in outs)
+    assert outs[4].extra["persons"]            # detected
+    assert outs[10].extra["persons"] == []     # blink: no detection ...
+    assert outs[10].extra["roi"] is not None   # ... but live ROI continues
+
+
+def test_privacy_goes_dark_after_window():
+    det = FakeDetector([[[50, 40, 200, 440, 0.9]]] * 5 + [[]] * 60)
+    p = PrivacyPreprocessor(det, lost_reset=45, keepalive_every=10)
+    outs = [p.process(gray_frame()) for _ in range(65)]
+    # after the 45-frame window expires, only keepalives (black markers) remain
+    tail = outs[55:]
+    assert all(o is None or o.extra["roi"] is None for o in tail)
+    assert any(o is not None and o.extra["roi"] is None for o in tail)  # keepalive fired

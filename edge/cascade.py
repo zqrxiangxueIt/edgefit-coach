@@ -22,7 +22,11 @@ PERSON_CLASS = 0
 
 class PersonDetector:
     def __init__(self, model_path: str = "models/detect.tflite",
-                 score_thr: float = 0.55, num_threads: int = 2) -> None:
+                 score_thr: float = 0.45, num_threads: int = 2) -> None:
+        # score_thr tuned down from 0.55: this int8 v1 model (mAP 23.4) drops
+        # confidence on close-range partial bodies; presence gating tolerates
+        # the extra false-positive risk, and hysteresis in the callers
+        # absorbs the remaining flicker.
         from ai_edge_litert.interpreter import Interpreter  # lazy: Pi-only dep
         self.it = Interpreter(model_path=model_path, num_threads=num_threads)
         self.it.allocate_tensors()
