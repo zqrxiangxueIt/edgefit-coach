@@ -40,18 +40,25 @@ python edge/edge_main.py --mode event --source camera
 | `cascade` | LiteRT MobileNet-SSD int8 人形初筛 | 端侧 NN 协同，无人才不传 |
 | `privacy` | 仅发送人形 ROI，其余打码 | 隐私保护演示 |
 
-## 量化实验（进行中）
+## 量化实验（✅ 见 [docs/benchmarks.md](docs/benchmarks.md)）
 
-- 四模式 × 三档限速（模拟 5G 上行/WiFi/窄带）下的带宽、端到端延迟、有效帧率对比
-- 推理后端对比：DirectML (RX 9070GRE) vs OpenVINO (125H) vs CPU
-- 模型对比：yolo11n-pose vs yolo26n-pose
+真实跨机链路实测（Pi 5 → PC，四模式热切换 × 令牌桶限速模拟）：
 
-结果将更新在 `docs/benchmarks.md`。
+| 场景 | raw | event | cascade | privacy |
+|---|---|---|---|---|
+| 空场景 60% + 间歇运动 | 137.7 KB/s | **1.9 KB/s（-98.6%）** | **0（无人即静默）** | **0（连环境都不上传）** |
+| 持续有人运动 | 1529 KB/s | 1300 KB/s | 1550 KB/s | 2280 KB/s（换来隐私+数字变焦）|
+| 全链路 e2e（采集→PC 收到）| 24ms | 33ms | 46ms | 57ms（不含摄像头缓冲）|
+
+- A 端神经网络初筛（LiteRT SSD int8）在 Pi 5 上实测 **~21ms/帧**
+- B 端 DirectML（RX 9070GRE）纯推理 **5.6ms** vs CPU 25.8ms（**4.6×**）
+- 模型对比：yolo11n-pose（默认）≈ yolo26n-pose，前者计数更稳
 
 ## 里程碑
 
 - [x] M0 仓库骨架 + B 端离线管线（测试视频 → 姿态 → 弯举计数）✅ 2026-11-22：DirectML 5.8ms/帧，离线视频 6 reps 计数正确
 - [x] M1 ZMQ 跨机链路（Pi ↔ PC over Tailscale）+ 时钟同步 ✅ 2026-11-22：30fps 零丢帧，传输 p50 20ms，全链路 ~34ms；控制信道 NTP 式测偏移（Pi 时钟 -769ms）
-- [ ] M2 A 端 event 模式（运动门控 + 自适应压缩）
-- [ ] M3 USB 摄像头 + Web 仪表盘
-- [ ] M4 cascade/privacy 模式 + 限速量化实验 + 实拍演示视频
+- [x] M2 A 端 event 模式（运动门控 + 自适应压缩）✅ 静止段带宽 -98.6%（真实链路实测）
+- [x] M3 USB 摄像头 + Web 仪表盘 ✅ 四模式热切换、实时曲线、浏览器实测验收
+- [x] M4 cascade/privacy 模式 + 限速量化实验 ✅ 详见 docs/benchmarks.md
+- [ ] 实拍演示视频（收尾）
