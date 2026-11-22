@@ -53,12 +53,15 @@
       <div class="card">
         <div style="display:flex;justify-content:space-between;align-items:baseline">
           <h1>🏋️ EdgeFit Coach <span class="sub">Pi 5 → PC · 边缘协同弯举教练</span></h1>
-          <span id="linkState">连接中…</span>
+          <span style="display:flex;gap:12px;align-items:center">
+            <span id="linkState">连接中…</span>
+            <button id="powerBtn" style="padding:6px 16px;border-radius:8px;border:1px solid var(--line);background:#11161d;color:var(--dim);font-size:13px;cursor:pointer">⏻ 开启系统</button>
+          </span>
         </div>
         <div id="stage" style="margin-top:10px">
-          <span class="empty">等待视频流…（先启动树莓派端 edge_main）</span>
+          <span class="empty" id="standbyMsg">系统已关停 · 点击右上角 ⏻ 开启</span>
           <canvas id="video" width="960" height="540" style="display:none"></canvas>
-          <div id="modeBadge">mode: -</div>
+          <div id="modeBadge" style="display:none">mode: -</div>
         </div>
         <div class="modes">
           <button data-mode="raw">raw 全量</button>
@@ -121,7 +124,25 @@ async function drawFrame(buf) {
 }
 
 let lastIdx = 0;   // highest rep index already logged (B2: index dedup)
+function setPower(on) {
+  const btn = $("powerBtn");
+  btn.textContent = on ? "⏻ 关停系统" : "⏻ 开启系统";
+  btn.style.color = on ? "var(--bad)" : "var(--acc)";
+  document.querySelectorAll(".modes button[data-mode]").forEach(b => b.disabled = !on);
+  if (!on) {
+    canvas.style.display = "none";
+    $("modeBadge").style.display = "none";
+    const msg = $("standbyMsg");
+    msg.style.display = "block";
+    msg.textContent = "系统已关停 · 点击右上角 ⏻ 开启";
+  }
+}
+
 function meta(m) {
+  if (m.power === "off") { setPower(false); return; }
+  setPower(true);
+  $("standbyMsg").style.display = "none";
+  $("modeBadge").style.display = "block";
   $("reps").textContent = m.reps;
   $("full").textContent = m.full;
   $("half").textContent = m.half;
@@ -155,6 +176,21 @@ function meta(m) {
     while (log.children.length > 20) log.lastChild.remove();
   }
 }
+
+$("powerBtn").addEventListener("click", async () => {
+  const btn = $("powerBtn");
+  if (btn.disabled) return;
+  btn.disabled = true;
+  const turnOn = btn.textContent.includes("开启");
+  btn.textContent = turnOn ? "⏻ 正在开启…" : "⏻ 正在关停…";
+  try {
+    const r = await fetch(`/api/power/${turnOn ? "on" : "off"}`, { method: "POST" });
+    const j = await r.json();
+    if (!r.ok) alert(j.detail || "操作失败");
+    else if (j.detail && j.detail.includes("failed")) alert("启动失败: " + j.detail);
+  } catch (e) { alert("操作失败: " + e); }
+  finally { setTimeout(() => { btn.disabled = false; }, 1000); }
+});
 
 document.querySelectorAll(".modes button[data-mode]").forEach(btn => {
   btn.addEventListener("click", async () => {
