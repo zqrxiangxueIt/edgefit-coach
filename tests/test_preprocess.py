@@ -85,10 +85,10 @@ def test_raw_preprocessor_passes_every_frame():
 def test_cascade_sends_only_when_person_present():
     boxes = [[100, 100, 300, 400, 0.9]]        # person box (x1,y1,x2,y2,score)
     det = FakeDetector([boxes] * 5 + [[]] * 30 + [boxes] * 3)
-    p = CascadePreprocessor(det, grace_frames=5)
-    outs = [p.process(gray_frame()) for _ in range(38)]
+    p = CascadePreprocessor(det, grace_s=5 / 30)   # 5 frames worth of grace
+    outs = [p.process(gray_frame(), t=i / 30) for i in range(38)]
     sent = [o for o in outs if o is not None]
-    # 5 with person + 5 grace + first of re-acquisition (grace re-arms on hit)
+    # 5 with person + 5 grace-seconds-frames + 3 re-acquired
     assert len(sent) == 5 + 5 + 3
     assert all("persons" in o.extra for o in sent)
     assert sent[0].extra["det_ms"] == 3.0
@@ -96,8 +96,8 @@ def test_cascade_sends_only_when_person_present():
 
 def test_cascade_silence_after_grace():
     det = FakeDetector([[]] * 40)
-    p = CascadePreprocessor(det, grace_frames=3)
-    outs = [p.process(gray_frame()) for _ in range(40)]
+    p = CascadePreprocessor(det, grace_s=0.1)
+    outs = [p.process(gray_frame(), t=i / 30) for i in range(40)]
     # only the very first frame goes out (self._i == 1 special case)
     assert sum(o is not None for o in outs) == 1
 
@@ -138,8 +138,8 @@ def test_privacy_roi_smoothed():
 def test_privacy_survives_detector_blink():
     """检测器间歇漏检（人还在镜头前）时，ROI 内实时画面必须持续，不得黑屏。"""
     det = FakeDetector([[[50, 40, 200, 440, 0.9]]] * 5 + [[]] * 20)
-    p = PrivacyPreprocessor(det, lost_reset=45)
-    outs = [p.process(gray_frame()) for _ in range(25)]
+    p = PrivacyPreprocessor(det, lost_s=1.5)
+    outs = [p.process(gray_frame(), t=i / 30) for i in range(25)]
     # all 25 frames must transmit: 5 with detection + 20 persisted live crops
     assert all(o is not None for o in outs)
     assert outs[4].extra["persons"]            # detected
@@ -149,8 +149,8 @@ def test_privacy_survives_detector_blink():
 
 def test_privacy_goes_dark_after_window():
     det = FakeDetector([[[50, 40, 200, 440, 0.9]]] * 5 + [[]] * 60)
-    p = PrivacyPreprocessor(det, lost_reset=45, keepalive_every=10)
-    outs = [p.process(gray_frame()) for _ in range(65)]
+    p = PrivacyPreprocessor(det, lost_s=1.5, keepalive_every=10)
+    outs = [p.process(gray_frame(), t=i / 30) for i in range(65)]
     # after the 45-frame window expires, only keepalives (black markers) remain
     tail = outs[55:]
     assert all(o is None or o.extra["roi"] is None for o in tail)

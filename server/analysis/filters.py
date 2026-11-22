@@ -68,7 +68,14 @@ class KeypointSmoother:
         self._fx = [OneEuroFilter(**filter_kwargs) for _ in range(n_kps)]
         self._fy = [OneEuroFilter(**filter_kwargs) for _ in range(n_kps)]
 
-    def update(self, kps: np.ndarray) -> np.ndarray:
+    def update(self, kps: np.ndarray, dt: float | None = None) -> np.ndarray:
+        """dt: real inter-frame interval when known (from A-side capture
+        timestamps). The filter's 30fps assumption breaks under throttled /
+        narrowband delivery where the effective rate is far lower."""
+        if dt is not None and dt > 1e-3:
+            freq = 1.0 / dt
+            for f in self._fx + self._fy:
+                f.freq = freq
         out = kps.copy()
         for i in range(kps.shape[0]):
             if kps[i, 2] <= 0.0:

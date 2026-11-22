@@ -157,23 +157,23 @@ class CascadePreprocessor:
     model sees a person (Reducto/E4-style edge filtering -- the A-side
     "preliminary computation" is itself a neural network).
 
-    `grace_frames` keeps the stream alive briefly after the person leaves
-    (hysteresis, avoids flapping on detector dropouts).
+    `grace_s` keeps the stream alive briefly after the person leaves
+    (hysteresis, avoids flapping on detector dropouts). SECONDS, not frames:
+    delivered fps varies with mode and throttling.
     """
 
     def __init__(self, detector, max_width: int = 960, jpeg_q: int = 75,
-                 grace_frames: int = 25, keepalive_every: int = 0) -> None:
-        # grace ~0.8s at 30fps: bridges intermittent detector dropouts on
-        # close-range partial bodies without keeping a stale stream alive
+                 grace_s: float = 0.8, keepalive_every: int = 0) -> None:
         self.det = detector
         self.max_width = max_width
         self.jpeg_q = jpeg_q
-        self.grace = grace_frames
+        self.grace_s = grace_s
         self.keepalive_every = keepalive_every
-        self._left = 0
+        self._t_person_last: float | None = None
         self._i = 0
 
-    def process(self, frame: np.ndarray) -> ProcessedFrame | None:
+    def process(self, frame: np.ndarray, t: float | None = None) -> ProcessedFrame | None:
+        t = time.time() if t is None else t
         self._i += 1
         t0 = time.perf_counter()
         persons = self.det.detect(frame)
@@ -181,13 +181,11 @@ class CascadePreprocessor:
 
         keepalive = (self.keepalive_every > 0
                      and self._i % self.keepalive_every == 0)
-        # decide BEFORE decrementing: grace_frames=N sends up to N frames
-        # after the person disappears (intuitive semantics)
-        send = bool(persons) or self._left > 0 or keepalive or self._i == 1
         if persons:
-            self._left = self.grace
-        else:
-            self._left = max(0, self._left - 1)
+            self._t_person_last = t
+        send = (bool(persons)
+                or self._t_person_last is not None and t - self._t_person_last <= self.grace_s
+                or keepalive or self._i == 1)
         if not send:
             return None                                  # no person: silence
 
@@ -211,23 +209,23 @@ class PrivacyPreprocessor:
 
     def __init__(self, detector, max_width: int = 960, jpeg_q: int = 82,
                  pad_frac: float = 0.30, smooth: float = 0.65,
-                 lost_reset: int = 45, keepalive_every: int = 0) -> None:
-        # lost_reset ~1.5s at 30fps: while inside the window after a missed
-        # detection we keep streaming the LIVE frame cropped at the last ROI
-        # (the person is usually still there, the detector just blinked);
-        # only after the window expires does the mode go dark again.
+                 lost_s: float = 1.5, keepalive_every: int = 0) -> None:
+        # lost_s: while inside the window after a missed detection we keep
+        # streaming the LIVE frame cropped at the last ROI (the person is
+        # usually still there, the detector just blinked); only after the
+        # window expires does the mode go dark again. SECONDS, not frames.
         self.det = detector
         self.max_width = max_width
         self.jpeg_q = jpeg_q
         self.pad_frac = pad_frac
         self.smooth = smooth
-        self.lost_reset = lost_reset
+        self.lost_s = lost_s
         self.keepalive_every = keepalive_every
         self._roi: tuple[float, float, float, float] | None = None   # x, y, w, h (EMA-smoothed floats)
-        self._lost = 0
+        self._t_person_last: float | None = None
         self._i = 0
 
-    def _track_roi(self, persons, w: int, h: int) -> tuple[int, int, int, int] | None:
+    def _track_roi(self, persons, w: int, h: int, t: float):
         if persons:
             x1, y1, x2, y2, _ = max(persons, key=lambda b: (b[2] - b[0]) * (b[3] - b[1]))
             px = (x2 - x1) * self.pad_frac
@@ -235,23 +233,27 @@ class PrivacyPreprocessor:
             x1, y1 = max(0, x1 - px), max(0, y1 - py)
             x2, y2 = min(w, x2 + px), min(h, y2 + py)
             cur = (x1, y1, x2 - x1, y2 - y1)
-            if self._roi is None or self._lost >= self.lost_reset:
-                self._roi = cur
+            fresh = (self._t_person_last is None
+                     or t - self._t_person_last > self.lost_s)
+            if self._roi is None or fresh:
+                self._roi = cur                      # snap after a long loss
             else:
                 a = np.array(self._roi, dtype=np.float64)
-                self._roi = tuple((a * self.smooth + np.array(cur) * (1 - self.smooth)))
-            self._lost = 0
+                self._roi = tuple(a * self.smooth + np.array(cur) * (1 - self.smooth))
+            self._t_person_last = t
             return self._roi
-        self._lost += 1
-        return None if self._lost > self.lost_reset else self._roi
+        if self._t_person_last is None or t - self._t_person_last > self.lost_s:
+            return None
+        return self._roi
 
-    def process(self, frame: np.ndarray) -> ProcessedFrame | None:
+    def process(self, frame: np.ndarray, t: float | None = None) -> ProcessedFrame | None:
+        t = time.time() if t is None else t
         self._i += 1
         t0 = time.perf_counter()
         h, w = frame.shape[:2]
         persons = self.det.detect(frame)
         det_ms = getattr(self.det, "last_ms", 0.0)
-        roi = self._track_roi(persons, w, h)
+        roi = self._track_roi(persons, w, h, t)
 
         keepalive = (self.keepalive_every > 0
                      and self._i % self.keepalive_every == 0)

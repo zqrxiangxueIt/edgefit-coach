@@ -239,13 +239,19 @@ class StreamingPipeline(threading.Thread):
 
             annotated = None
             events: list = []
+            # real dt for the filters: A-side capture interval, not wall clock
+            dt_est = None
+            if last_capture_t is not None:
+                d = header.ts_capture - last_capture_t
+                if 0.001 < d < 1.0:
+                    dt_est = d
             if results:
-                kps = smoother.update(results[0].keypoints)
+                kps = smoother.update(results[0].keypoints, dt=dt_est)
                 events = counter.update(kps)
                 annotated = draw(frame, results[0], counter, kps)
             else:
                 zeros = np.zeros((17, 3), np.float32)
-                smoother.update(zeros)
+                smoother.update(zeros, dt=dt_est)
                 counter.update(zeros)
                 annotated = frame
 

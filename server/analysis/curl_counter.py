@@ -22,9 +22,9 @@ Per-arm rep logic (v1, dumbbell bicep curl):
     * phase EXTENDED: elbow angle >= up_angle   (arm straight, rep boundary;
       140deg by default - gym form rarely fully locks the elbow)
     * phase CURLING : elbow angle <= flex_angle (rep underway)
-    * a phase change must be confirmed by `debounce` CONSECUTIVE frames on
-      the target side of the band; any frame back inside the band, or back
-      on the current phase, re-arms the debounce;
+    * a phase change must be confirmed by the angle STAYING on the target
+      side of the band for `debounce_s` seconds (time-based: the delivered
+      fps is not the capture fps under narrowband/throttling);
     * a rep completes on CURLING -> EXTENDED and reports the minimum elbow
       angle reached while CURLING was confirmed (glitches while EXTENDED
       cannot pollute it);
@@ -103,17 +103,18 @@ class _ActivityGate:
 
 
 class _ArmTracker:
-    """Per-arm angle hysteresis machine with consecutive-frame debouncing."""
+    """Per-arm angle hysteresis machine with sustained-time debouncing."""
 
     def __init__(self, side: str, up_angle: float, flex_angle: float,
-                 full_rep_angle: float, debounce: int) -> None:
+                 full_rep_angle: float, debounce_s: float) -> None:
         self.side = side
         self.up_angle = up_angle
         self.flex_angle = flex_angle
         self.full_rep_angle = full_rep_angle
-        self.debounce = debounce
+        self.debounce_s = debounce_s      # SECONDS, not frames: the delivered
+        self._debounce_t0: Optional[float] = None  # fps drops to ~2.4 under
+        # narrowband, and a 3-frame debounce then spans half a second
         self.phase = Phase.IDLE
-        self._debounce_left = debounce
         self._min_angle_in_rep = 180.0
         self.gate = _ActivityGate()
         self.rep_started_t: Optional[float] = None
@@ -124,7 +125,7 @@ class _ArmTracker:
     def lost(self) -> None:
         self.phase = Phase.IDLE
         self._min_angle_in_rep = 180.0
-        self._debounce_left = self.debounce
+        self._debounce_t0 = None
         self.gate.reset()
         self.rep_started_t = None
         self._t_min = None
@@ -142,23 +143,26 @@ class _ArmTracker:
         elif angle >= self.up_angle:
             target = Phase.EXTENDED
         else:
-            self._debounce_left = self.debounce   # mid-band frame re-arms debounce
+            self._debounce_t0 = None    # mid-band frame re-arms debounce
             return None
 
         if target == self.phase:
-            self._debounce_left = self.debounce   # confirmed in-phase: re-arm
+            self._debounce_t0 = None    # confirmed in-phase: re-arm
             return None
 
-        if self._debounce_left > 0:               # not yet N consecutive frames
-            self._debounce_left -= 1
-            if self._debounce_left > 0:
-                return None
+        # sustained-target confirmation (time-based): the angle must STAY in
+        # the target zone for debounce_s continuously
+        if self._debounce_t0 is None:
+            self._debounce_t0 = t
+            return None
+        if t - self._debounce_t0 < self.debounce_s:
+            return None
 
         completed_min: Optional[float] = None
         if target is Phase.EXTENDED and self.phase is Phase.CURLING:
             completed_min = self._min_angle_in_rep
         self.phase = target
-        self._debounce_left = self.debounce
+        self._debounce_t0 = None
         if target is Phase.CURLING:
             # seed with the confirming frame's angle: for a fast rep this is
             # often the deepest point, and pre-confirmation frames were
@@ -213,7 +217,8 @@ class CurlCounter:
                  up_angle: float = 140.0,
                  flex_angle: float = 110.0,
                  full_rep_angle: float = 75.0,
-                 debounce: int = 3,
+                 debounce_s: float = 0.06,   # at 30fps == the old 3-frame rule;
+                 # rejects single-frame glitches at normal fps (33ms < 60ms)
                  min_conf: float = 0.35,
                  side: str = "both",
                  check_torso_swing: bool = True,
@@ -224,8 +229,8 @@ class CurlCounter:
             raise ValueError("require full_rep_angle < flex_angle < up_angle")
         if side not in ("both", "left", "right"):
             raise ValueError("side must be one of both|left|right")
-        if int(debounce) < 1:
-            raise ValueError("debounce must be >= 1")
+        if debounce_s <= 0:
+            raise ValueError("debounce_s must be > 0")
         if not 0.0 <= min_conf <= 1.0:
             raise ValueError("min_conf must be in [0, 1]")
         if full_rep_tol < 0:
@@ -242,7 +247,7 @@ class CurlCounter:
         arms = {"left": LEFT_ARM, "right": RIGHT_ARM}
         for s in (("left", "right") if side == "both" else (side,)):
             self.trackers[s] = _ArmTracker(s, up_angle, flex_angle,
-                                           full_rep_angle, int(debounce))
+                                           full_rep_angle, debounce_s)
 
     @property
     def phase(self) -> Phase:
@@ -303,7 +308,13 @@ class CurlCounter:
             if not gate_ok:
                 self.stats.phantom_reps_suppressed += 1
                 continue
-            full = rep_min <= self.full_rep_angle + self.full_rep_tol
+            # noise-aware tolerance: angle noise scales as ~115*sigma_px/L_px
+            # (error propagation, worst near 90deg); at 100px limbs that is
+            # ~5deg, so a fixed 0.5deg tolerance misjudges borderline reps.
+            # sigma_px~1.5 post-filter is an assumption until online MAD.
+            sigma_theta = 115.0 * 1.5 / max(upper_arm, 10.0)
+            eff_tol = min(12.0, max(self.full_rep_tol, 3.0 * sigma_theta))
+            full = rep_min <= self.full_rep_angle + eff_tol
             # tempo from the anchors (guard against missing anchors: a rep
             # that never sampled a full extension has no measurable phases)
             t_con = (tracker._t_min - tracker._t_last_extended

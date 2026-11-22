@@ -109,11 +109,11 @@ def test_glitch_while_extended_does_not_pollute_min():
     c = CurlCounter()
     feed(c, [170.0] * 8)
     seq = [60.0] + [170.0] * 4          # unconfirmed deep-flex glitch
-    seq += sweep(170, 80, 5) + [80.0] * 5 + sweep(80, 170, 5) + [170.0] * 5
+    seq += sweep(170, 88, 5) + [88.0] * 5 + sweep(88, 170, 5) + [170.0] * 5
     events = feed(c, seq)
     assert len(events) == 1
-    assert events[0].full is False
-    assert events[0].min_angle == pytest.approx(80.0, abs=2.0)
+    assert events[0].full is False          # 88 > 75 + dynamic tol (~5.2 here)
+    assert events[0].min_angle == pytest.approx(88.0, abs=2.0)
     assert "幅度不足" in c.stats.warnings[0]
 
 
@@ -142,10 +142,10 @@ def test_boundary_angle_exactly_full_rep():
 
 
 def test_boundary_angle_just_past_half():
-    """min = 76° 超出容差 -> 半程。"""
+    """min = 84°，超出动态容差（100px 上臂 -> tol≈5.2°，即 >80.2° 为半程）。"""
     c = CurlCounter()
     feed(c, [170.0] * 8)
-    seq = sweep(170, 76, 5) + [76.0] * 5 + sweep(76, 170, 5) + [170.0] * 5
+    seq = sweep(170, 84, 5) + [84.0] * 5 + sweep(84, 170, 5) + [170.0] * 5
     events = feed(c, seq)
     assert len(events) == 1
     assert events[0].full is False
@@ -224,7 +224,7 @@ def test_threshold_validation():
     with pytest.raises(ValueError):
         CurlCounter(up_angle=100, flex_angle=110, full_rep_angle=75)
     with pytest.raises(ValueError):
-        CurlCounter(debounce=0)
+        CurlCounter(debounce_s=0)
     with pytest.raises(ValueError):
         CurlCounter(min_conf=1.5)
 
