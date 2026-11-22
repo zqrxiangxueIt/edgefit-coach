@@ -12,7 +12,9 @@ Usage:
 
 import os
 
-os.environ.setdefault("YOLO_AUTOINSTALL", "false")
+# hard set, not setdefault: a YOLO_AUTOINSTALL=true inherited from the shell
+# would re-enable the auto-install that clobbers onnxruntime-directml (N3)
+os.environ["YOLO_AUTOINSTALL"] = "false"
 
 from pathlib import Path
 

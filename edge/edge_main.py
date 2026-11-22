@@ -74,7 +74,8 @@ def main() -> None:
     ctrl = ctx.socket(zmq.REP)
     ctrl.bind(f"tcp://*:{int(args.bind.split(':')[-1]) + 1}")
     print(f"[edge] mode={args.mode} source={args.source} bind={args.bind} "
-          f"({args.max_width}px, q{args.jpeg_quality}, sample_every={args.sample_every})")
+          f"({args.max_width}px, q{args.jpeg_quality}, sample_every={args.sample_every})",
+          flush=True)
 
     seq = 0
     t_start = time.time()
@@ -95,11 +96,21 @@ def main() -> None:
             # serve control pings on EVERY iteration: in event mode idle
             # frames are skipped (pf is None) and a ping would otherwise
             # starve until the next keepalive -- poisoning clock-offset
-            # estimates exactly when the link is quiet
+            # estimates exactly when the link is quiet.
+            # Malformed input must NOT kill the streamer (S1), and REP
+            # requires a recv->send pair even on error or it wedges forever.
             if ctrl.poll(0):
-                req = ctrl.recv_json()
-                ctrl.send_json({"t_reply": time.time(),
-                                "mode": args.mode, "seq": seq, "echo": req})
+                try:
+                    req = ctrl.recv_json()
+                    reply = {"t_reply": time.time(), "mode": args.mode,
+                             "seq": seq, "echo": req}
+                except (ValueError, zmq.ZMQError) as e:
+                    reply = {"t_reply": time.time(), "mode": args.mode,
+                             "seq": seq, "error": f"bad request: {e}"}
+                try:
+                    ctrl.send_json(reply)
+                except zmq.ZMQError:
+                    pass
             if pf is None:
                 continue
             seq += 1
@@ -116,7 +127,7 @@ def main() -> None:
             if now - t_stat >= 5.0:
                 dt = now - t_stat
                 print(f"[edge] sent {n_stat/dt:5.1f} fps  {b_stat/dt/1024:7.1f} KB/s  "
-                      f"a_proc {pf.a_proc_ms:.1f} ms  seq={seq}")
+                      f"a_proc {pf.a_proc_ms:.1f} ms  seq={seq}", flush=True)
                 t_stat, n_stat, b_stat = now, 0, 0
     except KeyboardInterrupt:
         print("\n[edge] interrupted")

@@ -90,8 +90,13 @@ class EventPreprocessor:
         self._prev_small: np.ndarray | None = None
         self._i = 0
 
-    def _motion(self, frame: np.ndarray) -> tuple[float, bool]:
-        """(raw motion score, had_reference); the first frame has no reference."""
+    def _motion(self, frame: np.ndarray) -> tuple[float, float, bool]:
+        """(raw mean diff, diff p99, had_reference).
+
+        The mean drives gating (calibrated); p99 is recorded in extra --
+        a small distant mover barely moves the mean but lights up p99,
+        which is the right signal for future per-region gating (N2).
+        """
         h, w = frame.shape[:2]
         small_w = 320
         small = cv2.resize(frame, (small_w, max(1, round(h * small_w / w))),
@@ -100,15 +105,15 @@ class EventPreprocessor:
         gray = cv2.GaussianBlur(gray, (5, 5), 0)
         if self._prev_small is None:
             self._prev_small = gray
-            return 0.0, False
+            return 0.0, 0.0, False
         diff = cv2.absdiff(gray, self._prev_small)
         self._prev_small = gray
-        return float(diff.mean()), True
+        return float(diff.mean()), float(np.percentile(diff, 99)), True
 
     def process(self, frame: np.ndarray) -> ProcessedFrame | None:
         self._i += 1
         t0 = time.perf_counter()
-        raw_motion, had_ref = self._motion(frame)
+        raw_motion, diff_p99, had_ref = self._motion(frame)
         norm = min(1.0, raw_motion / self.motion_ref) if self.motion_ref > 0 else 0.0
 
         keepalive = (self.keepalive_every > 0
@@ -127,4 +132,5 @@ class EventPreprocessor:
             return None
         return ProcessedFrame(jpeg=buf.tobytes(), w=w, h=h, jpeg_q=jpeg_q,
                               motion=norm, a_proc_ms=(time.perf_counter() - t0) * 1000,
-                              extra={"motion_raw": round(raw_motion, 2)})
+                              extra={"motion_raw": round(raw_motion, 2),
+                                     "diff_p99": round(diff_p99, 1)})

@@ -4,14 +4,17 @@ import numpy as np
 
 from edge.preprocess import EventPreprocessor, RawPreprocessor
 
+# module-level rng: a per-call seed would make two "noisy" frames pixel-identical
+# (diff == 0), silently testing nothing (N6)
+_RNG = np.random.default_rng(3)
+
 
 def gray_frame(w=640, h=480, box_x=None, noise=0.0):
     img = np.full((h, w, 3), 40, dtype=np.uint8)
     if box_x is not None:
         img[200:280, box_x:box_x + 60] = 220
     if noise > 0:
-        rng = np.random.default_rng(3)
-        img = np.clip(img.astype(int) + rng.normal(0, noise, img.shape), 0, 255).astype(np.uint8)
+        img = np.clip(img.astype(int) + _RNG.normal(0, noise, img.shape), 0, 255).astype(np.uint8)
     return img
 
 

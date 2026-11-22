@@ -28,10 +28,11 @@ from server.analysis.filters import KeypointSmoother
 from server.inference.pose_engine import PoseEngine
 
 
-def estimate_offset(control_endpoint: str, n: int = 5) -> tuple[float, float]:
+def estimate_offset(control_endpoint: str, n: int = 5) -> tuple[float, float] | None:
     """NTP-style clock offset (A-clock minus B-clock) over the ZMQ control
-    channel.  Returns (offset_seconds, min_rtt_ms); best sample by RTT.
-    Accuracy ~±RTT/2 (few ms on the LAN tailnet).
+    channel.  Returns (offset_seconds, min_rtt_ms), best sample by RTT;
+    None when the channel is dead (caller must NOT pretend offset is 0 --
+    on the real pair A-B is ~-779ms, so a fake 0 poisons every e2e number).
     """
     ctx = zmq.Context.instance()
     s = ctx.socket(zmq.REQ)
@@ -56,7 +57,7 @@ def estimate_offset(control_endpoint: str, n: int = 5) -> tuple[float, float]:
             time.sleep(0.05)
     finally:
         s.close()
-    return best if best is not None else (0.0, float("nan"))
+    return best
 
 
 def main() -> None:
@@ -72,11 +73,17 @@ def main() -> None:
                     help="stop after N seconds (0=until Ctrl+C); Windows-friendly testing")
     args = ap.parse_args()
 
-    offset = args.clock_offset
-    if offset == 0.0:
+    offset: float | None = args.clock_offset
+    if args.clock_offset == 0.0:
         control_ep = f"tcp://{args.connect.split('//')[1].rsplit(':', 1)[0]}:{int(args.connect.rsplit(':', 1)[1]) + 1}"
-        offset, rtt = estimate_offset(control_ep)
-        print(f"[server] clock offset A-B = {offset*1000:+.1f} ms (min RTT {rtt:.1f} ms)")
+        res = estimate_offset(control_ep)
+        if res is None:
+            print("[server] WARN: clock-offset estimation failed; "
+                  "e2e will be reported as n/a")
+            offset = None
+        else:
+            offset, rtt = res
+            print(f"[server] clock offset A-B = {offset*1000:+.1f} ms (min RTT {rtt:.1f} ms)")
 
     engine = PoseEngine(args.model, backend=args.backend)
     smoother = KeypointSmoother()
@@ -90,14 +97,17 @@ def main() -> None:
           f"model={Path(args.model).name}")
 
     writer = None
-    infer_ms: deque = deque(maxlen=300)
-    e2e_ms: deque = deque(maxlen=300)     # capture->result, needs clock-offset
+    # metric window sized to match the stats interval (~stats_every * fps,
+    # with headroom) so percentiles don't mix pre/post mode-switch samples (N4)
+    mlen = max(60, int(args.stats_every * 40))
+    infer_ms: deque = deque(maxlen=mlen)
+    e2e_ms: deque = deque(maxlen=mlen)     # capture->receive; None if no offset
     t_stat = time.time()
     n_stat = b_stat = 0
     first_seq = last_seq = None
     last_capture_t = None
     t_begin = time.time()
-    capture_iv: deque = deque(maxlen=300)  # A-side inter-frame intervals
+    capture_iv: deque = deque(maxlen=mlen)  # A-side inter-frame intervals
 
     try:
         while True:
@@ -137,28 +147,41 @@ def main() -> None:
                 capture_iv.append(header.ts_capture - last_capture_t)
             last_capture_t = header.ts_capture
             # e2e = (B_recv - A_capture) + (A-clock - B-clock): see estimate_offset
-            e2e_ms.append((t_recv - header.ts_capture + offset) * 1000)
+            if offset is not None:
+                e2e_ms.append((t_recv - header.ts_capture + offset) * 1000)
 
             if args.record and results:
                 if writer is None:
+                    # estimate fps from observed A-side inter-frame intervals
+                    # (N7: hardcoded 15 played back 25/30fps streams too fast)
+                    est_fps = (1.0 / np.median(capture_iv)
+                               if len(capture_iv) >= 5 else 25.0)
                     writer = cv2.VideoWriter(
-                        args.record, cv2.VideoWriter_fourcc(*"mp4v"), 15,
+                        args.record, cv2.VideoWriter_fourcc(*"mp4v"), est_fps,
                         (frame.shape[1], frame.shape[0]))
+                    print(f"[server] recording at {est_fps:.1f} fps -> {args.record}")
                 from scripts.offline_pipeline import draw
                 writer.write(draw(frame, results[0], counter, kps))
 
             now = time.time()
             if now - t_stat >= args.stats_every:
                 dt = now - t_stat
-                got = last_seq - first_seq + 1 if last_seq else 0
+                got = (last_seq - first_seq + 1
+                       if last_seq is not None and first_seq is not None else 0)
+                loss = max(0, got - n_stat)       # frames A sent, B never saw (S4)
+                loss_pct = f" ({100*loss/got:.0f}%)" if got else ""
                 iv = np.mean(capture_iv) if capture_iv else float("nan")
+                e2e_txt = (f"{np.percentile(e2e_ms, 50):5.0f} ms" if e2e_ms
+                           else "  n/a")
                 print(f"[server] rx {n_stat/dt:5.1f} fps  {b_stat/dt/1024:7.1f} KB/s  "
+                      f"loss {loss}{loss_pct}  "
                       f"a_eff {1/iv if iv and iv > 0 else float('nan'):5.1f} fps "
                       f"(src gap {iv*1000 if iv==iv else 0:4.0f} ms)  "
                       f"infer p50 {np.percentile(infer_ms, 50):5.1f} / "
                       f"p95 {np.percentile(infer_ms, 95):5.1f} ms  "
-                      f"e2e p50 {np.percentile(e2e_ms, 50):5.0f} ms  "
-                      f"reps={counter.stats.reps} (suppressed {counter.stats.phantom_reps_suppressed})")
+                      f"e2e p50 {e2e_txt}  "
+                      f"reps={counter.stats.reps} (suppressed {counter.stats.phantom_reps_suppressed})",
+                      flush=True)
                 t_stat, n_stat, b_stat = time.time(), 0, 0
                 first_seq = None
     except KeyboardInterrupt:

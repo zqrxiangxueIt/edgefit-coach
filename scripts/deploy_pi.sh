@@ -13,8 +13,9 @@ PI_DIR="${PI_DIR:-edgefit}"
 SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=8 -i "$PI_KEY")
 
 echo ">> syncing code to $PI_USER@$PI_HOST:~/$PI_DIR"
-ssh "${SSH_OPTS[@]}" "$PI_USER@$PI_HOST" "mkdir -p ~/$PI_DIR"
+ssh "${SSH_OPTS[@]}" "$PI_USER@$PI_HOST" "mkdir -p ~/$PI_DIR/scripts"
 scp "${SSH_OPTS[@]}" -r common edge requirements-edge.txt "$PI_USER@$PI_HOST:~/$PI_DIR/"
+scp "${SSH_OPTS[@]}" scripts/setup_pi.sh "$PI_USER@$PI_HOST:~/$PI_DIR/scripts/"
 
 if [[ ! -f videos/curl_a.mp4 ]]; then
     echo "!! local videos/curl_a.mp4 missing; skip asset sync (fine if already on Pi)"
@@ -27,8 +28,10 @@ fi
 if [[ "${1:-}" == "--run" ]]; then
     shift
     echo ">> starting edge_main.py with args: $*"
-    ssh "${SSH_OPTS[@]}" "$PI_USER@$PI_HOST" "cd ~/$PI_DIR && .venv/bin/python -m edge.edge_main $*"
+    ssh "${SSH_OPTS[@]}" "$PI_USER@$PI_HOST" "cd ~/$PI_DIR && .venv/bin/python -u -m edge.edge_main $*"
 else
-    echo "deploy_pi: synced. Start manually:"
-    echo "  ssh $PI_USER@$PI_HOST 'cd ~/$PI_DIR && .venv/bin/python -m edge.edge_main --help'"
+    echo "deploy_pi: synced. First time on this Pi? run setup first:"
+    echo "  ssh $PI_USER@$PI_HOST 'cd ~/$PI_DIR && bash scripts/setup_pi.sh'"
+    echo "then start manually:"
+    echo "  ssh $PI_USER@$PI_HOST 'cd ~/$PI_DIR && .venv/bin/python -u -m edge.edge_main --help'"
 fi
