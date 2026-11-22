@@ -32,7 +32,7 @@ def joint_angle(kps: np.ndarray, a: int, b: int, c: int) -> tuple[float, float]:
     v1 = pa[:2] - pb[:2]
     v2 = pc[:2] - pb[:2]
     n1, n2 = np.linalg.norm(v1), np.linalg.norm(v2)
-    if n1 < 1e-6 or n2 < 1e-6:
+    if n1 < 1e-3 or n2 < 1e-3:   # below float32 pixel resolution: degenerate
         return 180.0, 0.0
     cosang = float(np.clip(np.dot(v1, v2) / (n1 * n2), -1.0, 1.0))
     return math.degrees(math.acos(cosang)), conf

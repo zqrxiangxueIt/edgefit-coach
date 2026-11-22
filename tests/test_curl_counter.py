@@ -1,29 +1,34 @@
 """CurlCounter behaviour tests with synthetic keypoint sequences.
 
-Keypoint layout: right arm only (auto side-pick locks to right after a few
-frames).  Elbow at (200, 300); shoulder left of elbow; wrist placed so the
-interior elbow angle equals `beta`:  wrist = elbow + (-cos(beta), sin(beta))
-scaled by forearm length 100px.
+Geometry: right arm — shoulder (100,300), elbow (200,300), wrist placed so
+the interior elbow angle equals `beta`:  wrist = elbow + (-cos(beta), sin(beta))
+* 100px.  Left arm is the mirror, offset 200px down.  Upper arm = 100px
+(activity-gate threshold = 100px path with cap 40px/frame).
 """
 
 import math
 
 import numpy as np
+import pytest
 
 from server.analysis.curl_counter import CurlCounter, Phase
-from server.analysis.geometry import (L_SHOULDER, L_ELBOW, L_WRIST, L_HIP)
-
-ELBOW = np.array([200.0, 300.0])
 
 
-def frame(beta: float, conf: float = 1.0):
-    """One (17,3) keypoint frame whose right-elbow interior angle is beta."""
+def frame(beta: float, beta_left: float | None = None, conf: float = 1.0):
+    """One (17,3) keypoint frame; left arm included when beta_left given."""
     kps = np.zeros((17, 3), dtype=np.float32)
     kps[6] = [100.0, 300.0, conf]                     # R_SHOULDER
-    kps[8] = [ELBOW[0], ELBOW[1], conf]               # R_ELBOW
-    kps[10] = [ELBOW[0] - 100 * math.cos(math.radians(beta)),
-               ELBOW[1] + 100 * math.sin(math.radians(beta)), conf]  # R_WRIST
-    kps[12] = [150.0, 500.0, conf]                    # R_HIP (torso scale)
+    kps[8] = [200.0, 300.0, conf]                     # R_ELBOW
+    kps[10] = [200.0 - 100 * math.cos(math.radians(beta)),
+               300.0 + 100 * math.sin(math.radians(beta)), conf]      # R_WRIST
+    kps[12] = [150.0, 300.0, conf]                    # R_HIP (torso scale)
+    if beta_left is not None:
+        # mirror: shoulder right of elbow so the interior angle is beta_left
+        kps[5] = [300.0, 500.0, conf]                 # L_SHOULDER
+        kps[7] = [200.0, 500.0, conf]                 # L_ELBOW
+        kps[9] = [200.0 + 100 * math.cos(math.radians(beta_left)),
+                  500.0 + 100 * math.sin(math.radians(beta_left)), conf]  # L_WRIST
+        kps[11] = [350.0, 500.0, conf]                # L_HIP
     return kps
 
 
@@ -31,22 +36,61 @@ def sweep(a: float, b: float, n: int):
     return [a + (b - a) * i / n for i in range(1, n + 1)]
 
 
-def feed(counter, angles):
-    return [e for ang in angles if (e := counter.update(frame(ang), t=ang)) is not None]
+def feed(counter, frames):
+    """Feed frames; returns all rep events. Timestamps are monotonic."""
+    events = []
+    for i, f in enumerate(frames):
+        if isinstance(f, (int, float)):
+            f = frame(f)
+        events.extend(counter.update(f, t=i / 30.0))
+    return events
 
 
 def test_five_full_reps():
     c = CurlCounter()
-    events = feed(c, [170.0] * 8)                     # warmup, side locks
+    feed(c, [170.0] * 8)                     # warmup
     assert c.phase is Phase.EXTENDED
     seq = []
     for _ in range(5):
         seq += sweep(170, 40, 5) + [40.0] * 5 + sweep(40, 170, 5) + [170.0] * 5
-    events += feed(c, seq)
+    events = feed(c, seq)
     assert len(events) == 5
     assert all(e.full for e in events)
     assert [e.index for e in events] == [1, 2, 3, 4, 5]
     assert c.stats.reps == 5 and c.stats.half_reps == 0
+
+
+def test_dual_arm_same_frame_both_counted():
+    """杠铃弯举：双臂同帧完成 —— 两个事件都必须上报（B1 回归）。"""
+    c = CurlCounter()
+    frames = [(170.0, 170.0)] * 8
+    for _ in range(3):
+        for a, b in zip(sweep(170, 40, 5), sweep(170, 40, 5)):
+            frames.append((a, b))
+        frames += [(40.0, 40.0)] * 5
+        for a, b in zip(sweep(40, 170, 5), sweep(40, 170, 5)):
+            frames.append((a, b))
+        frames += [(170.0, 170.0)] * 5
+    events = feed(c, [frame(r, l) for r, l in frames])
+    assert len(events) == 6
+    assert sum(e.side == "left" for e in events) == 3
+    assert sum(e.side == "right" for e in events) == 3
+    assert c.stats.reps == 6
+    # 同帧完成的两个 rep 时间戳一致
+    ts = [e.t for e in events]
+    assert ts[0] == ts[1]
+
+
+def test_isolated_spikes_no_phantom():
+    """B2 回归：CURLING 期插入孤立单帧伸展尖峰（非连续）不得凑成 rep。"""
+    c = CurlCounter()
+    feed(c, [170.0] * 8)
+    seq = [40.0] * 5 + [170.0] + [40.0] * 5 + [170.0] + [40.0] * 5 + [170.0] + [40.0] * 5
+    events = feed(c, seq)
+    assert events == []
+    assert c.stats.reps == 0
+    assert c.stats.phantom_reps_suppressed == 0
+    assert c.phase is Phase.CURLING
 
 
 def test_half_rep_flagged_with_warning():
@@ -58,6 +102,53 @@ def test_half_rep_flagged_with_warning():
     assert all(not e.full for e in events)
     assert c.stats.half_reps == 2
     assert len(c.stats.warnings) == 2
+
+
+def test_glitch_while_extended_does_not_pollute_min():
+    """S1 回归：EXTENDED 期的单帧深屈毛刺不得把后续真实半程污染成全程。"""
+    c = CurlCounter()
+    feed(c, [170.0] * 8)
+    seq = [60.0] + [170.0] * 4          # unconfirmed deep-flex glitch
+    seq += sweep(170, 80, 5) + [80.0] * 5 + sweep(80, 170, 5) + [170.0] * 5
+    events = feed(c, seq)
+    assert len(events) == 1
+    assert events[0].full is False
+    assert events[0].min_angle == pytest.approx(80.0, abs=2.0)
+    assert "幅度不足" in c.stats.warnings[0]
+
+
+def test_fast_rep_without_hold_seeds_min_at_confirmation():
+    """无停顿的快速动作：确认帧（最深点）必须播种 min，否则全程误判半程。"""
+    c = CurlCounter()
+    feed(c, [170.0] * 8)
+    seq = []
+    for _ in range(2):
+        seq += sweep(170, 40, 4) + sweep(40, 170, 4) + [170.0] * 4
+    events = feed(c, seq)
+    assert len(events) == 2
+    assert all(e.full for e in events)
+    assert all(e.min_angle <= 60.0 for e in events)
+
+
+def test_boundary_angle_exactly_full_rep():
+    """min == full_rep_angle (75°) 按全程计（<= + 0.5° 容差）。"""
+    c = CurlCounter()
+    feed(c, [170.0] * 8)
+    seq = sweep(170, 75, 5) + [75.0] * 5 + sweep(75, 170, 5) + [170.0] * 5
+    events = feed(c, seq)
+    assert len(events) == 1
+    assert events[0].full is True
+    assert events[0].min_angle == pytest.approx(75.0, abs=0.1)
+
+
+def test_boundary_angle_just_past_half():
+    """min = 76° 超出容差 -> 半程。"""
+    c = CurlCounter()
+    feed(c, [170.0] * 8)
+    seq = sweep(170, 76, 5) + [76.0] * 5 + sweep(76, 170, 5) + [170.0] * 5
+    events = feed(c, seq)
+    assert len(events) == 1
+    assert events[0].full is False
 
 
 def test_jitter_below_thresholds_no_counts():
@@ -73,12 +164,21 @@ def test_jitter_below_thresholds_no_counts():
 def test_lost_person_resets_to_idle():
     c = CurlCounter()
     feed(c, [170.0] * 8)
-    c.update(frame(40.0))                             # mid-rep
-    c.update(frame(40.0, conf=0.0))                   # tracker lost the person
+    c.update(frame(40.0), t=9.0)                     # mid-rep
+    c.update(frame(40.0, conf=0.0), t=9.1)           # tracker lost the person
     assert c.phase is Phase.IDLE
-    # person returns straight-armed: still no phantom rep
-    events = feed(c, [170.0] * 6)
+    events = feed(c, [170.0] * 6)                    # person returns straight-armed
     assert events == [] and c.stats.reps == 0
+
+
+def test_confidence_flicker_around_gate():
+    """conf 在 min_conf 边界抖动：掉线帧触发 lost()，不得崩溃或误计。"""
+    c = CurlCounter()
+    feed(c, [170.0] * 8)
+    seq = [frame(40.0 if i % 4 < 2 else 170.0, conf=0.34 if i % 3 == 0 else 0.9)
+           for i in range(30)]
+    events = feed(c, seq)
+    assert c.stats.reps == len(events)
 
 
 def test_hanging_arm_phantom_suppressed():
@@ -89,7 +189,7 @@ def test_hanging_arm_phantom_suppressed():
     events = feed(c, seq)
     assert events == []
     assert c.stats.reps == 0
-    assert c.stats.phantom_reps_suppressed >= 1
+    assert c.stats.phantom_reps_suppressed == 1
 
 
 def test_real_single_arm_rep_passes_gate():
@@ -105,7 +205,25 @@ def test_real_single_arm_rep_passes_gate():
     assert all(e.full for e in events)
 
 
+def test_torso_swing_warning():
+    """躯干大幅横移（借力）应触发警告。"""
+    c = CurlCounter()
+    frames = [170.0] * 8
+    # during the rep the shoulder slides 80px sideways (torso=50px -> span 1.6x)
+    swing_seq = sweep(170, 40, 5) + [40.0] * 5 + sweep(40, 170, 5) + [170.0] * 5
+    for i, beta in enumerate(swing_seq):
+        kps = frame(beta)
+        kps[6, 0] = 100.0 + (80.0 if 8 <= i < 8 + len(swing_seq) / 2 else 0.0)
+        frames.append(kps)
+    events = feed(c, frames)
+    assert len(events) == 1
+    assert any("躯干摆动" in w for w in c.stats.warnings)
+
+
 def test_threshold_validation():
-    import pytest
     with pytest.raises(ValueError):
         CurlCounter(up_angle=100, flex_angle=110, full_rep_angle=75)
+    with pytest.raises(ValueError):
+        CurlCounter(debounce=0)
+    with pytest.raises(ValueError):
+        CurlCounter(min_conf=1.5)

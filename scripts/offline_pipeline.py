@@ -90,10 +90,9 @@ def main() -> None:
 
         if results:
             kps = smoother.update(results[0].keypoints)
-            ev = counter.update(kps)
-            if ev:
+            for ev in counter.update(kps):
                 events.append(ev)
-                print(f"  [rep {ev.index}] full={ev.full} min_angle={ev.min_angle:.0f}")
+                print(f"  [rep {ev.index}][{ev.side}] full={ev.full} min_angle={ev.min_angle:.0f}")
         else:
             kps = smoother.update(np.zeros((17, 3), np.float32))
             counter.update(kps)
