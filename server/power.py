@@ -28,12 +28,14 @@ _SSH = ["ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new",
 # bracketed pattern below matches real streamers but not its own cmdline.
 _EDGE_PREKILL = "pkill -f 'edge[.]edge_main'; sleep 0.5; echo K"
 # single fixed production profile; keepalive keeps the dashboard alive in
-# event mode, mode is hot-switchable from the web page
+# event mode, mode is hot-switchable from the web page. The pidfile makes
+# the RUNNING verdict OUR process: pgrep alone would happily report someone
+# else's streamer that grabbed the port first (S2).
 _EDGE_START = (
     f"cd ~/{PI_DIR} && (nohup .venv/bin/python -u -m edge.edge_main "
     f"--mode event --source camera --bind tcp://0.0.0.0:5555 --keepalive 30 "
-    f"> edge.log 2>&1 &) && sleep 2 && "
-    f"(pgrep -f 'edge[.]edge_main' >/dev/null && echo RUNNING || echo FAILED)")
+    f"> edge.log 2>&1 & echo $! > edge.pid) && sleep 2 && "
+    f"(kill -0 $(cat edge.pid) 2>/dev/null && echo RUNNING || echo FAILED)")
 _EDGE_STOP = ("pkill -f 'edge[.]edge_main'; sleep 1; "
               "pgrep -f 'edge[.]edge_main' >/dev/null && echo STILL || echo STOPPED")
 
@@ -52,15 +54,19 @@ class PowerManager:
     def __init__(self, connect: str, model: str = "models/yolo11n-pose.onnx",
                  backend: str = "dml") -> None:
         self.connect, self.model, self.backend = connect, model, backend
-        self._lock = threading.Lock()
+        self._pipe_lock = threading.Lock()   # guards _pipe ONLY (fast; the
+        # event loop takes it in /api/status and the WS loop -- it must never
+        # be held across SSH)
+        self._op_lock = threading.Lock()     # serializes on/off sequences
         self._pipe: StreamingPipeline | None = None
+        self._zombie: StreamingPipeline | None = None
         # survives power cycles: a training plan outlives a stream pause
         self.session = TrainingSession()
 
     # ---------------------------------------------------------------- api --
 
     def pipeline(self) -> StreamingPipeline | None:
-        with self._lock:
+        with self._pipe_lock:
             return self._pipe
 
     def state(self) -> dict:
@@ -72,21 +78,36 @@ class PowerManager:
         }
 
     def on(self) -> dict:
-        with self._lock:
-            if self._pipe is not None and self._pipe.is_alive():
+        with self._op_lock:
+            pipe = self.pipeline()
+            if pipe is not None and pipe.is_alive():
                 return {"power": "on", "detail": "already on"}
-        _ssh(_EDGE_PREKILL)   # guard against a stale/manually-started streamer
-        out = _ssh(_EDGE_START)
-        if "RUNNING" not in out:
-            return {"power": "off", "detail": f"edge failed to start: {out}"}
-        pipe = StreamingPipeline(self.connect, self.model, self.backend,
-                                 stats_every=1.0, session=self.session)
-        if getattr(self, "record_path", ""):
-            pipe.record_to(self.record_path)   # S2: EDGE_RECORD was dead code
-        pipe.start()
-        with self._lock:
-            self._pipe = pipe
-        return {"power": "on", "detail": "edge RUNNING, pipeline started"}
+            if pipe is not None or self._zombie is not None:
+                # reap a zombie left by a timed-out off() (S1): two live
+                # pipelines would both subscribe the stream and double-write
+                # any recording
+                z = self._zombie or pipe
+                print("[power] reaping leftover pipeline thread ...", flush=True)
+                z.stop()
+                z.join(timeout=8)
+                if z.is_alive():
+                    return {"power": "off",
+                            "detail": "previous pipeline thread stuck; retry in a moment"}
+                self._zombie = None
+            # slow SSH sequence runs WITHOUT _pipe_lock: readers on the event
+            # loop must stay responsive during boot (B4)
+            _ssh(_EDGE_PREKILL)
+            out = _ssh(_EDGE_START)
+            if "RUNNING" not in out:
+                return {"power": "off", "detail": f"edge failed to start: {out}"}
+            new_pipe = StreamingPipeline(self.connect, self.model, self.backend,
+                                         stats_every=1.0, session=self.session)
+            if getattr(self, "record_path", ""):
+                new_pipe.record_to(self.record_path)
+            new_pipe.start()
+            with self._pipe_lock:
+                self._pipe = new_pipe
+            return {"power": "on", "detail": "edge RUNNING, pipeline started"}
 
     def reset_stats(self) -> dict:
         pipe = self.pipeline()
@@ -96,11 +117,16 @@ class PowerManager:
         return {"detail": "reset requested"}
 
     def off(self) -> dict:
-        with self._lock:
-            pipe, self._pipe = self._pipe, None
-        if pipe is not None:
-            pipe.stop()
-            pipe.join(timeout=5)   # frees the ORT session / GPU memory
-        out = _ssh(_EDGE_STOP)
-        return {"power": "off",
-                "detail": f"pipeline stopped, edge {out}"}
+        with self._op_lock:
+            with self._pipe_lock:
+                pipe, self._pipe = self._pipe, None
+            if pipe is not None:
+                pipe.stop()
+                pipe.join(timeout=5)   # frees the ORT session / GPU memory
+                if pipe.is_alive():
+                    # keep the reference so on() can reap it (S1)
+                    self._zombie = pipe
+                    print("[power] WARNING: pipeline thread did not exit in "
+                          "5s (still holds ORT session)", flush=True)
+            out = _ssh(_EDGE_STOP)
+            return {"power": "off", "detail": f"pipeline stopped, edge {out}"}

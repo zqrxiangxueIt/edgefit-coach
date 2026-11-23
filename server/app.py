@@ -38,12 +38,39 @@ power = PowerManager(CONNECT, MODEL, BACKEND)
 store = HistoryStore(os.environ.get("EDGE_DB", "data/edgefit.db"))
 
 
+async def _history_worker():
+    """Persist reps / close sessions at 1 Hz regardless of browser presence.
+
+    B2: driving persistence from the WS loop meant "no browser open" ==
+    "training history never saved"; this task owns it instead."""
+    while True:
+        await asyncio.sleep(1.0)
+        pipe = power.pipeline()
+        if pipe is None or not pipe.is_alive():
+            continue
+        try:
+            if store.current_id is not None:
+                store.feed(pipe.recent_events())
+                if power.session.snapshot()["phase"] == "done":
+                    _finish_open_session(pipe)
+        except Exception as e:   # persistence must never break streaming
+            print(f"[history] persist error: {e}", flush=True)
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     if RECORD:
         Path(RECORD).parent.mkdir(parents=True, exist_ok=True)
         power.record_path = RECORD
-    yield   # nothing runs until the user powers the system on
+    worker = asyncio.get_running_loop().create_task(_history_worker())
+    yield
+    worker.cancel()
+    pipe = power.pipeline()          # final close on dashboard shutdown
+    if pipe is not None:
+        _finish_open_session(pipe)
+        pipe.stop()
+        pipe.join(timeout=5)
+    store.close()
 
 
 app = FastAPI(title="EdgeFit Coach", lifespan=lifespan)
@@ -79,6 +106,8 @@ async def session_start(sets: int = 3, reps: int = 8, rest: float = 60.0):
             if r["power"] != "on":
                 raise HTTPException(502, f"cannot power on: {r['detail']}")
             pipe = power.pipeline()
+            if pipe is None:   # S3: a concurrent off() may have won the race
+                raise HTTPException(502, "system powered off during start")
         total = pipe.counter_total() if pipe else 0   # S6: live total, not
         power.session.start(total, sets=sets, reps_per_set=reps, rest_sec=rest)  # the up-to-1s-stale window snapshot
         store.begin(sets_planned=sets, reps_per_set=reps, rest_sec=rest,
@@ -99,7 +128,10 @@ def _finish_open_session(pipe) -> None:
         st = pipe.status()
         stats = {"reps": st.reps, "full_reps": st.full_reps,
                  "half_reps": st.half_reps, "suppressed": st.suppressed}
-    store.finish(stats, power.session.snapshot())
+    try:
+        store.finish(stats, power.session.snapshot())
+    except Exception as e:   # a failed flush must not kill callers (B1 chain)
+        print(f"[history] finish failed: {e}", flush=True)
 
 
 @app.post("/api/session/stop")
@@ -197,11 +229,6 @@ async def stream(ws: WebSocket):
             meta = pipe.status()
             payload = pipe.latest_jpeg()
             events = pipe.recent_events()
-            snap = power.session.snapshot()
-            if store.current_id is not None:
-                store.feed(events)
-                if snap["phase"] == "done":
-                    _finish_open_session(pipe)
             await ws.send_text(json.dumps({
                 "power": "on",
                 "session": power.session.snapshot(),

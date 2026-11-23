@@ -290,6 +290,12 @@ class CurlCounter:
                                            full_rep_angle, debounce_s)
 
     @property
+    def cos_psi(self) -> Optional[float]:
+        """Smoothed body-yaw estimate (None until torso seen); consumers
+        should not reach for the private attribute."""
+        return self._cos_psi
+
+    @property
     def phase(self) -> Phase:
         """Most active tracker's phase (UI convenience: curling wins)."""
         if not self.trackers:

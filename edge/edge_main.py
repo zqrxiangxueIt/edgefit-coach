@@ -174,18 +174,10 @@ def main() -> None:
                 break
             if args.duration and time.time() - t_start > args.duration:
                 break
-            item = grabber.latest(last_count)
-            if item is None:
-                time.sleep(0.002)      # no newer frame yet
-                continue
-            last_count, frame, t_capture = item
-            pf = pre.process(frame)
-            # serve control pings on EVERY iteration: in event mode idle
-            # frames are skipped (pf is None) and a ping would otherwise
-            # starve until the next keepalive -- poisoning clock-offset
-            # estimates exactly when the link is quiet.
-            # Malformed input must NOT kill the streamer (S1), and REP
-            # requires a recv->send pair even on error or it wedges forever.
+            # serve control BEFORE waiting on frames: a low-fps or stalled
+            # source (or an idle event stream) must not starve clock pings /
+            # mode switches. Malformed input must NOT kill the streamer, and
+            # REP requires a recv->send pair even on error or it wedges.
             if ctrl.poll(0):
                 switched = False
                 try:
@@ -234,9 +226,13 @@ def main() -> None:
                 except zmq.ZMQError:
                     pass
                 if switched:
-                    # the current frame was produced by the OLD preprocessor:
-                    # drop it instead of shipping it under the new mode label
-                    continue
+                    continue    # old-mode frame dropped rather than mislabeled
+            item = grabber.latest(last_count)
+            if item is None:
+                time.sleep(0.002)      # no newer frame yet
+                continue
+            last_count, frame, t_capture = item
+            pf = pre.process(frame)
             if pf is None:
                 continue
             # uplink budget: drop frames the (simulated) link cannot carry

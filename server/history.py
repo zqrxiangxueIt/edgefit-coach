@@ -74,6 +74,7 @@ class HistoryStore:
         """Record new rep events of the open session (index-deduped)."""
         if self._current is None:
             return
+        inserted = 0
         with self._lock:
             for e in sorted(events, key=lambda x: x["index"]):
                 if e["index"] <= self._stored_idx or self._current is None:
@@ -85,7 +86,9 @@ class HistoryStore:
                      e.get("min_angle"), e.get("t"), e.get("t_con", 0.0),
                      e.get("t_ecc", 0.0)))
                 self._stored_idx = e["index"]
-            self._db.commit()
+                inserted += 1
+            if inserted:   # N4: no commit (fsync) when nothing changed
+                self._db.commit()
 
     def finish(self, stats: dict, session_snapshot: dict | None = None) -> None:
         """Close the open session with outcome aggregates.

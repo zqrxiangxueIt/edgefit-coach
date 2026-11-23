@@ -272,7 +272,13 @@ $("btnStart").onclick = async () => {
 };
 $("btnStop").onclick = () => post("/api/session/stop").then(refreshHistory);
 $("btnSkip").onclick = () => post("/api/session/skip_rest");
-$("btnReset").onclick = () => post("/api/stats/reset").then(refreshHistory);
+$("btnReset").onclick = () => post("/api/stats/reset").then(() => {
+  // counter index restarts at 1: clear all UI accumulators with it (N7)
+  lastIdx = 0; lastRepCount = 0; symL = 0; symR = 0;
+  repData = []; drawBars();
+  $("log").innerHTML = ""; $("tempoTxt").textContent = "-";
+  refreshHistory();
+});
 document.querySelectorAll(".modes button[data-mode]").forEach(btn => {
   btn.onclick = async () => {
     if (btn.disabled) return;
@@ -332,7 +338,7 @@ function drawBars() {
 }
 
 /* ---------------- session / meta rendering ---------------- */
-let lastIdx = 0, lastRepCount = 0, restSpoken = -1;
+let lastIdx = 0, lastRepCount = 0, restSpoken = -1, symL = 0, symR = 0;
 function renderSession(s) {
   const ov = $("overlay");
   if (!s || s.phase === "idle") {
@@ -407,10 +413,11 @@ function meta(m) {
   if ((m.warnings || []).length) showWarning(m.warnings[m.warnings.length - 1]);
   renderSession(m.session);
   // events: log + ROM bars + symmetry + tempo
-  const evs = m.events || [];
-  const last = evs[evs.length - 1];
-  if (last && last.index !== lastIdx) {
-    const log = $("log");
+    const evs = m.events || [];
+    const last = evs[evs.length - 1];
+    if (last && last.index !== lastIdx) {
+      const prevIdx = lastIdx;
+      const log = $("log");
     evs.filter(e => e.index > lastIdx).forEach(e => {
       repData.push({ min_angle: e.min_angle, full: e.full });
       const div = document.createElement("div");
@@ -423,9 +430,11 @@ function meta(m) {
     while (log.children.length > 24) log.lastChild.remove();
     lastIdx = last.index;
     drawBars();
-    const l = evs.filter(e => e.side === "left").length;
-    const r = evs.filter(e => e.side === "right").length;
-    $("symTxt").textContent = `左 ${l} · 右 ${r}`;
+    // cumulative side totals (N6: the last-5 window mislabelled "symmetry")
+    evs.filter(e => e.index > prevIdx).forEach(e => {
+      if (e.side === "left") symL++; else symR++;
+    });
+    $("symTxt").textContent = `左 ${symL} · 右 ${symR}`;
   }
 }
 
@@ -455,7 +464,12 @@ let retry = 0;
 function connect() {
   const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
   ws.binaryType = "arraybuffer";
-  ws.onopen = () => { retry = 0; refreshHistory(); };
+  ws.onopen = () => {
+    retry = 0;
+    $("linkState").textContent = "● 已连接";      // S4: restore after reconnect
+    $("linkState").style.color = "var(--acc)";
+    refreshHistory();
+  };
   ws.onmessage = (ev) => {
     if (typeof ev.data === "string") meta(JSON.parse(ev.data));
     else drawFrame(ev.data);

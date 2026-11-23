@@ -27,7 +27,8 @@ from server.analysis.visualize import draw
 from server.inference.pose_engine import PoseEngine
 
 
-def estimate_offset(control_endpoint: str, n: int = 5) -> tuple[float, float] | None:
+def estimate_offset(control_endpoint: str, n: int = 5,
+                    stopping=None) -> tuple[float, float] | None:
     """NTP-style clock offset (A-clock minus B-clock) over the ZMQ control
     channel.  Returns (offset_seconds, min_rtt_ms), best sample by RTT;
     None when the channel is dead (caller must NOT pretend offset is 0 --
@@ -42,6 +43,8 @@ def estimate_offset(control_endpoint: str, n: int = 5) -> tuple[float, float] | 
     best: tuple[float, float] | None = None
     try:
         for _ in range(n):
+            if stopping is not None and stopping():   # S1: an off() during
+                break                                  # boot must not wait 10s
             t0 = time.time()
             try:
                 s.send_json({"cmd": "ping", "t0": t0})
@@ -189,7 +192,8 @@ class StreamingPipeline(threading.Thread):
     def _run(self) -> None:
         offset = self.clock_offset
         if offset is None:
-            res = estimate_offset(self.control_endpoint())
+            res = estimate_offset(self.control_endpoint(),
+                                  stopping=lambda: self._stop_evt.is_set())
             if res is None:
                 print("[pipeline] WARN: clock-offset estimation failed; e2e n/a",
                       flush=True)
@@ -367,7 +371,7 @@ class StreamingPipeline(threading.Thread):
                     s.motion = header.motion
                     s.elbow_l = counter.last_angles.get("left", 0.0)
                     s.elbow_r = counter.last_angles.get("right", 0.0)
-                    cp = counter._cos_psi
+                    cp = counter.cos_psi
                     s.view_ok = cp is None or (1.0 - cp * cp) >= 0.25
                     s.last_frame_age = time.time() - t_recv
                 t_stat, n_stat, b_stat = now, 0, 0
