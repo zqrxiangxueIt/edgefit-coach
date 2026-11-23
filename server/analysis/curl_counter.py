@@ -41,7 +41,9 @@ from typing import Optional
 
 import numpy as np
 
-from .geometry import LEFT_ARM, RIGHT_ARM, joint_angle, L_SHOULDER, R_SHOULDER, L_HIP, R_HIP
+from .geometry import (LEFT_ARM, RIGHT_ARM, joint_angle, L_SHOULDER,
+                       R_SHOULDER, L_HIP, R_HIP, estimate_yaw_scale,
+                       correct_projected_angle)
 
 
 class Phase(Enum):
@@ -224,7 +226,9 @@ class CurlCounter:
                  check_torso_swing: bool = True,
                  full_rep_tol: float = 0.5,
                  tempo_ecc_min: float = 1.0,
-                 tempo_con_max: float = 3.5) -> None:
+                 tempo_con_max: float = 3.5,
+                 view_correction: bool = True,
+                 rho_front: float = 0.85, rho_side: float = 0.30) -> None:
         if not full_rep_angle < flex_angle < up_angle:
             raise ValueError("require full_rep_angle < flex_angle < up_angle")
         if side not in ("both", "left", "right"):
@@ -241,6 +245,13 @@ class CurlCounter:
         self.full_rep_tol = full_rep_tol   # angles are estimates; tolerate ~0.5deg
         self.tempo_ecc_min = tempo_ecc_min  # eccentric (lowering) coach floor
         self.tempo_con_max = tempo_con_max  # concentric grind ceiling
+        # view-angle compensation: de-project sagittal-plane angles using the
+        # shoulder-axis yaw estimate (rho params come from anthropometrics
+        # now, from the calibration flow later)
+        self.view_correction = view_correction
+        self.rho_front, self.rho_side = rho_front, rho_side
+        self._cos_psi: Optional[float] = None   # EMA-smoothed yaw estimate
+        self._t_yaw: Optional[float] = None
         self.stats = SessionStats()
         self.torso = TorsoSwingChecker() if check_torso_swing else None
         self.trackers: dict[str, _ArmTracker] = {}
@@ -270,11 +281,24 @@ class CurlCounter:
         if self.torso is not None:
             self.torso.update(kps, t)
         events: list[RepEvent] = []
+        if self.view_correction:
+            raw, ok = estimate_yaw_scale(kps, self.rho_front, self.rho_side)
+            if ok:
+                if self._cos_psi is None or self._t_yaw is None:
+                    self._cos_psi, self._t_yaw = raw, t
+                else:
+                    dt = max(0.001, t - self._t_yaw)
+                    alpha = min(1.0, dt / 0.5)   # 0.5s yaw EMA (yaw is slow)
+                    self._cos_psi += alpha * (raw - self._cos_psi)
+                    self._t_yaw = t
+            # invalid torso frames: hold the last estimate (yaw changes slowly)
         for side, tracker in self.trackers.items():
             angle, conf = self.arm_angle(kps, side)
             if conf < self.min_conf:
                 tracker.lost()
                 continue
+            if self.view_correction and self._cos_psi is not None:
+                angle = correct_projected_angle(angle, self._cos_psi)
             # tempo anchors: _t_last_extended is the last fully-extended
             # sample BEFORE the lift leaves EXTENDED (only updated while
             # extended -- ascent frames crossing up_angle must NOT move it,

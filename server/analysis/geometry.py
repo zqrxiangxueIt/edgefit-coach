@@ -36,3 +36,48 @@ def joint_angle(kps: np.ndarray, a: int, b: int, c: int) -> tuple[float, float]:
         return 180.0, 0.0
     cosang = float(np.clip(np.dot(v1, v2) / (n1 * n2), -1.0, 1.0))
     return math.degrees(math.acos(cosang)), conf
+
+
+# ------------------------------------------------------------------- view --
+
+def estimate_yaw_scale(kps: np.ndarray, rho_front: float = 0.85,
+                       rho_side: float = 0.30) -> tuple[float, bool]:
+    """Estimate cos(body-yaw) from shoulder-width / torso-length ratio.
+
+    Standing curl: the forearm sweeps in the sagittal plane, whose normal is
+    the shoulder axis -- so shoulder apparent width collapses as the body
+    turns toward the camera. rho_front/rho_side (ratio facing / sideways the
+    camera) come from anthropometrics or the calibration flow. Returns
+    (cos_psi, valid); valid requires all four torso keypoints conf >= 0.3.
+    """
+    ls, rs, lh, rh = kps[L_SHOULDER], kps[R_SHOULDER], kps[L_HIP], kps[R_HIP]
+    if min(ls[2], rs[2], lh[2], rh[2]) < 0.3:
+        return 0.0, False
+    torso = float(np.median([np.hypot(*(ls[:2] - lh[:2])),
+                             np.hypot(*(rs[:2] - rh[:2]))]))
+    if torso < 10.0:
+        return 0.0, False
+    rho = float(np.hypot(*(ls[:2] - rs[:2]))) / torso
+    cos_psi = (rho - rho_side) / max(rho_front - rho_side, 1e-6)
+    return float(np.clip(cos_psi, 0.0, 1.0)), True
+
+
+def correct_projected_angle(theta_proj: float, cos_psi: float,
+                            min_scale: float = 0.5,
+                            max_correction: float = 25.0) -> float:
+    """De-project a sagittal-plane joint angle seen at body-yaw psi.
+
+    Closed form (orthographic): tan(theta_true/2) = cos(phi)*tan(theta_proj/2)
+    with cos(phi) = sin(psi). Projected angles are ALWAYS >= true, so this
+    only shrinks; correction is clamped and skipped when nearly frontal
+    (sin(psi) < min_scale: the angle is unobservable edge-on) or outside
+    the trustworthy band.
+    """
+    s2 = 1.0 - cos_psi * cos_psi
+    if s2 < min_scale * min_scale:
+        return theta_proj            # frontal: unobservable, don't fake it
+    if not 30.0 <= theta_proj <= 160.0:
+        return theta_proj            # near the extremes the formula is a no-op
+    s = math.sqrt(s2)
+    theta = 2.0 * math.degrees(math.atan(s * math.tan(math.radians(theta_proj / 2.0))))
+    return theta_proj + max(-max_correction, min(max_correction, theta - theta_proj))
