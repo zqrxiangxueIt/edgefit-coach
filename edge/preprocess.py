@@ -32,7 +32,10 @@ class ProcessedFrame:
 
 
 class RawPreprocessor:
-    """Baseline: uniform frame sampling, downscale, fixed-quality JPEG."""
+    """Baseline: uniform frame sampling, downscale, fixed-quality JPEG.
+
+    Accepts (and ignores) the optional timestamp for interface parity with
+    the timing-aware preprocessors."""
 
     def __init__(self, sample_every: int = 1, max_width: int = 960,
                  jpeg_q: int = 75) -> None:
@@ -41,7 +44,7 @@ class RawPreprocessor:
         self.jpeg_q = jpeg_q
         self._i = 0
 
-    def process(self, frame: np.ndarray) -> ProcessedFrame | None:
+    def process(self, frame: np.ndarray, t: float | None = None) -> ProcessedFrame | None:
         self._i += 1
         if (self._i - 1) % self.sample_every != 0:
             return None
@@ -110,7 +113,8 @@ class EventPreprocessor:
         self._prev_small = gray
         return float(diff.mean()), float(np.percentile(diff, 99)), True
 
-    def process(self, frame: np.ndarray) -> ProcessedFrame | None:
+    def process(self, frame: np.ndarray, t: float | None = None) -> ProcessedFrame | None:
+        t = time.time() if t is None else t
         self._i += 1
         t0 = time.perf_counter()
         raw_motion, diff_p99, had_ref = self._motion(frame)
