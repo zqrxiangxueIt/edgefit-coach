@@ -22,16 +22,14 @@ PI_DIR = os.environ.get("PI_DIR", "edgefit")
 _SSH = ["ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new",
         "-o", "ConnectTimeout=8", "-i", PI_KEY, f"{PI_USER}@{PI_HOST}"]
 
+# Pre-kill runs in its OWN ssh call: the start command's own remote cmdline
+# literally contains "edge.edge_main" (the nohup payload), so a pkill in the
+# same command would kill its own shell mid-flight (rc=255, silent). The
+# bracketed pattern below matches real streamers but not its own cmdline.
+_EDGE_PREKILL = "pkill -f 'edge[.]edge_main'; sleep 0.5; echo K"
 # single fixed production profile; keepalive keeps the dashboard alive in
-# event mode, mode is hot-switchable from the web page.
-# NOTE the [.] trick in pgrep/pkill patterns: a plain "edge_main" pattern
-# also matches THIS ssh command's own remote shell cmdline, which can kill
-# the shell mid-pkill and leak the real process (observed once).
-# The pre-kill guards against a manually-started streamer (demo checklist
-# used to ssh-start one): the second instance would die on the ZMQ bind
-# and the pgrep would then see only the first -- reporting false success.
+# event mode, mode is hot-switchable from the web page
 _EDGE_START = (
-    f"pkill -f 'edge[.]edge_main'; sleep 0.5; "
     f"cd ~/{PI_DIR} && (nohup .venv/bin/python -u -m edge.edge_main "
     f"--mode event --source camera --bind tcp://0.0.0.0:5555 --keepalive 30 "
     f"> edge.log 2>&1 &) && sleep 2 && "
@@ -77,6 +75,7 @@ class PowerManager:
         with self._lock:
             if self._pipe is not None and self._pipe.is_alive():
                 return {"power": "on", "detail": "already on"}
+        _ssh(_EDGE_PREKILL)   # guard against a stale/manually-started streamer
         out = _ssh(_EDGE_START)
         if "RUNNING" not in out:
             return {"power": "off", "detail": f"edge failed to start: {out}"}

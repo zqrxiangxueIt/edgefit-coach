@@ -208,6 +208,9 @@ async def stream(ws: WebSocket):
                 "infer_ms": round(meta.infer_p50_ms, 1),
                 "jpeg_q": meta.jpeg_q,
                 "motion": round(meta.motion, 2),
+                "elbow_l": round(meta.elbow_l, 1),
+                "elbow_r": round(meta.elbow_r, 1),
+                "view_ok": meta.view_ok,
                 "running": meta.running,
                 "events": events[-5:],
             }))

@@ -6,284 +6,461 @@
 <script src="/vendor/chart.umd.min.js"></script>
 <style>
   :root { --bg:#0f1216; --panel:#181d24; --line:#262d37; --txt:#e8ecf1;
-          --dim:#8a94a3; --acc:#4cc38a; --warn:#f0b429; --bad:#e5484d; }
+          --dim:#9aa5b5; --acc:#4cc38a; --warn:#f0b429; --bad:#e5484d; }
   * { box-sizing:border-box; margin:0; }
   body { background:var(--bg); color:var(--txt);
-         font-family:"Segoe UI",system-ui,sans-serif; padding:14px; }
-  .grid { display:grid; grid-template-columns: 1fr 320px; gap:14px; }
+         font-family:"Segoe UI",system-ui,sans-serif; padding:12px; }
+  h1 { font-size:17px; font-weight:600; }
+  .sub { color:var(--dim); font-size:12px; }
+  header { display:flex; align-items:center; gap:14px; flex-wrap:wrap; margin-bottom:10px; }
+  header .grow { flex:1; }
+  .modes { display:flex; gap:6px; }
+  .modes button { padding:8px 14px; border-radius:8px; border:1px solid var(--line);
+                  background:#11161d; color:var(--dim); font-size:14px; cursor:pointer; }
+  .modes button.active { background:var(--acc); color:#08130d; font-weight:700; border-color:var(--acc); }
+  .modes button:disabled { opacity:.4; cursor:not-allowed; }
+  .pill { padding:6px 14px; border-radius:8px; border:1px solid var(--line);
+          background:#11161d; color:var(--dim); font-size:13px; cursor:pointer; }
+  .pill.on { color:var(--acc); border-color:var(--acc); }
+  #powerBtn { color:var(--acc); font-weight:700; }
+  .grid { display:grid; grid-template-columns: 1fr 340px; gap:12px; }
   .card { background:var(--panel); border:1px solid var(--line);
           border-radius:10px; padding:12px; }
-  h1 { font-size:17px; font-weight:600; }
-  .sub { color:var(--dim); font-size:12px; margin-top:2px; }
-  video-frame { }
-  #stage { position:relative; background:#000; border-radius:8px; overflow:hidden;
-           min-height:360px; display:flex; align-items:center; justify-content:center; }
+  #stage { position:relative; background:#000; border-radius:10px; overflow:hidden;
+           min-height:340px; display:flex; align-items:center; justify-content:center; }
   #stage canvas { width:100%; height:auto; display:block; }
-  #stage .empty { color:var(--dim); font-size:13px; padding:60px 0; }
-  #modeBadge { position:absolute; top:10px; left:10px; background:#0009;
-               padding:4px 10px; border-radius:14px; font-size:12px;
-               font-family:Consolas,monospace; color:var(--acc); }
-  .modes { display:flex; gap:8px; margin-top:10px; }
-  .modes button { flex:1; padding:9px 0; border-radius:8px; border:1px solid var(--line);
-                  background:#11161d; color:var(--dim); font-size:13px; cursor:pointer; }
-  .modes button.active { background:var(--acc); color:#08130d; font-weight:700;
-                         border-color:var(--acc); }
-  .modes button:disabled { opacity:.45; cursor:not-allowed; }
-  .modes button.m4::after { content:" M4"; font-size:10px; opacity:.7; }
-  .big { font-size:56px; font-weight:800; line-height:1; color:var(--acc); }
-  .row { display:flex; justify-content:space-between; padding:5px 0;
-         border-bottom:1px dashed var(--line); font-size:13px; }
-  .row b { color:var(--txt); }
+  .empty { color:var(--dim); font-size:15px; padding:70px 0; }
+  .badge { position:absolute; top:10px; left:10px; background:#0009; padding:5px 12px;
+           border-radius:14px; font:13px Consolas,monospace; color:var(--acc); }
+  #viewHint { position:absolute; top:10px; right:10px; background:#0009; padding:5px 12px;
+              border-radius:14px; font-size:13px; color:var(--warn); display:none; }
+  #overlay { position:absolute; inset:0; display:none; align-items:center; justify-content:center;
+             flex-direction:column; background:#000a; font-size:76px; font-weight:800;
+             color:var(--acc); text-shadow:0 2px 14px #000; }
+  #overlay .small { font-size:24px; color:var(--txt); margin-top:10px; font-weight:500; }
+  #warnBanner { min-height:0; margin-top:10px; border-radius:8px; font-size:19px; font-weight:700;
+                padding:10px 16px; background:#3a2f10; color:var(--warn); border:1px solid #6b5615;
+                display:none; }
+  .hero { text-align:center; padding:18px 12px 14px; }
+  .hero .big { font-size:118px; font-weight:800; line-height:1; color:var(--acc);
+               transition:transform .12s; display:inline-block; }
+  .hero .big.pop { transform:scale(1.22); color:#7dffbe; }
+  .pills { display:flex; gap:8px; justify-content:center; margin-top:8px; }
+  .pills span { font-size:13px; padding:4px 12px; border-radius:12px; background:#11161d;
+                border:1px solid var(--line); color:var(--dim); }
+  .pills b { color:var(--txt); }
+  #setBar { margin-top:12px; }
+  #setBar .track { height:14px; background:#11161d; border-radius:7px; overflow:hidden; }
+  #setBar .fill { height:100%; background:var(--acc); width:0%; transition:width .3s; }
+  #setBar .lbl { font-size:14px; color:var(--dim); margin-bottom:4px; }
+  canvas.gauge { width:100%; height:150px; }
+  .dialrow { display:flex; justify-content:space-between; font-size:14px; color:var(--dim); }
+  .dialrow b { color:var(--txt); font-family:Consolas,monospace; }
+  .phase-chip { display:inline-block; padding:2px 12px; border-radius:10px; background:#11161d;
+                border:1px solid var(--line); color:var(--warn); font:13px Consolas,monospace; }
+  #repBars { width:100%; height:86px; margin-top:6px; }
+  .row { display:flex; justify-content:space-between; align-items:center; padding:6px 0;
+         border-bottom:1px dashed var(--line); font-size:14px; }
   .row span { color:var(--dim); }
-  #phase { font-family:Consolas,monospace; color:var(--warn); }
-  #warnings { margin-top:10px; font-size:12px; color:var(--warn);
-              max-height:120px; overflow-y:auto; }
-  .charts { display:grid; grid-template-columns:repeat(3,1fr); gap:14px; margin-top:14px; }
-  .chart h3 { font-size:12px; color:var(--dim); font-weight:500; margin-bottom:6px; }
-  .chart canvas { height:110px !important; }
-  #log { font-family:Consolas,monospace; font-size:11.5px; color:var(--dim);
-         max-height:140px; overflow-y:auto; }
+  .row input { width:44px; background:#11161d; color:var(--txt); border:1px solid var(--line);
+               border-radius:5px; padding:3px 6px; text-align:center; }
+  .btns { display:flex; gap:8px; margin-top:10px; }
+  .btns button { flex:1; padding:11px 0; border-radius:8px; border:1px solid var(--line);
+                 background:#11161d; color:var(--dim); font-size:14px; cursor:pointer; }
+  .btns button.primary { background:var(--acc); color:#08130d; font-weight:700; border-color:var(--acc); }
+  .btns button:disabled { opacity:.4; cursor:not-allowed; }
+  .charts { display:grid; grid-template-columns:1.4fr 1fr 1fr; gap:12px; margin-top:12px; }
+  .chart h3 { font-size:13px; color:var(--dim); font-weight:500; margin-bottom:6px; }
+  .chart h3 b { color:var(--acc); font-size:26px; font-family:Consolas,monospace; margin-left:8px; }
+  .chart canvas { height:92px !important; }
+  #log { font:12px Consolas,monospace; color:var(--dim); max-height:150px; overflow-y:auto; }
   #log .rep { color:var(--acc); }
-  #linkState { font-size:12px; color:var(--dim); }
+  #histCard canvas { height:130px !important; }
+  body.demo .full-only { display:none; }
+  #ttsHint { font-size:12px; color:var(--dim); }
+  @media (max-width:980px){ .grid { grid-template-columns:1fr; } .charts { grid-template-columns:1fr; } }
 </style>
 </head>
 <body>
-  <div class="grid">
-    <div>
-      <div class="card">
-        <div style="display:flex;justify-content:space-between;align-items:baseline">
-          <h1>🏋️ EdgeFit Coach <span class="sub">Pi 5 → PC · 边缘协同弯举教练</span></h1>
-          <span style="display:flex;gap:12px;align-items:center">
-            <span id="linkState">连接中…</span>
-            <button id="powerBtn" style="padding:6px 16px;border-radius:8px;border:1px solid var(--line);background:#11161d;color:var(--dim);font-size:13px;cursor:pointer">⏻ 开启系统</button>
-          </span>
-        </div>
-        <div id="stage" style="margin-top:10px;position:relative">
-          <span class="empty" id="standbyMsg">系统已关停 · 点击右上角 ⏻ 开启</span>
-          <canvas id="video" width="960" height="540" style="display:none"></canvas>
-          <div id="modeBadge" style="display:none">mode: -</div>
-          <div id="sessOverlay" style="display:none;position:absolute;inset:0;display:none;align-items:center;justify-content:center;flex-direction:column;background:#000a;font-size:72px;font-weight:800;color:var(--acc);text-shadow:0 2px 12px #000"></div>
-        </div>
-        <div class="modes">
-          <button data-mode="raw">raw 全量</button>
-          <button data-mode="event">event 事件</button>
-          <button data-mode="cascade">cascade 级联</button>
-          <button data-mode="privacy">privacy 脱敏</button>
-        </div>
+<header>
+  <h1>🏋️ EdgeFit Coach <span class="sub">Pi 5 → PC · 边缘协同弯举教练</span></h1>
+  <nav class="modes">
+    <button data-mode="raw">raw</button>
+    <button data-mode="event">event</button>
+    <button data-mode="cascade">cascade</button>
+    <button data-mode="privacy">privacy</button>
+  </nav>
+  <div class="grow"></div>
+  <span id="linkState" style="font-size:13px;color:var(--dim)">连接中…</span>
+  <button class="pill" id="ttsBtn" title="语音教练">🔊 语音</button>
+  <button class="pill" id="demoBtn" title="演示模式：只留镜头里看得清的元素">演示模式</button>
+  <button class="pill" id="powerBtn">⏻ 开启系统</button>
+</header>
+
+<div class="grid">
+  <section>
+    <div id="stage">
+      <span class="empty" id="standbyMsg">系统已关停 · 点击右上角 ⏻ 开启</span>
+      <canvas id="video" width="960" height="540" style="display:none"></canvas>
+      <div class="badge" id="modeBadge" style="display:none">mode: -</div>
+      <div id="viewHint">⚠ 视角过于正面 · 请侧向 45°–90°</div>
+      <div id="overlay"></div>
+    </div>
+    <div id="warnBanner"></div>
+
+    <div class="charts">
+      <div class="card chart">
+        <h3>带宽 <b id="bwNow">0</b><span style="font-size:13px;color:var(--dim)"> KB/s</span>　<span id="lossTxt" style="font-size:12px"></span></h3>
+        <canvas id="cBw"></canvas>
       </div>
-      <div class="charts">
-        <div class="card chart"><h3>端到端延迟 p50 (ms)</h3><canvas id="cE2E"></canvas></div>
-        <div class="card chart"><h3>带宽 (KB/s)</h3><canvas id="cBw"></canvas></div>
-        <div class="card chart"><h3>接收帧率 / 丢帧</h3><canvas id="cFps"></canvas></div>
+      <div class="card chart full-only"><h3>端到端 p50 (ms)</h3><canvas id="cE2E"></canvas></div>
+      <div class="card chart full-only"><h3>接收帧率</h3><canvas id="cFps"></canvas></div>
+    </div>
+    <div class="card full-only" id="histCard" style="margin-top:12px">
+      <h3 style="font-size:13px;color:var(--dim)">训练历史（次数 / 全程率）　<span id="lastBanner" style="color:var(--warn)"></span></h3>
+      <canvas id="cHist"></canvas>
+    </div>
+  </section>
+
+  <aside>
+    <div class="card hero">
+      <div class="big" id="reps">0</div>
+      <div class="pills">
+        <span>全程 <b id="full">0</b></span><span>半程 <b id="half">0</b></span><span>拦截 <b id="supp">0</b></span>
+      </div>
+      <div id="setBar">
+        <div class="lbl" id="setLbl">自由模式</div>
+        <div class="track"><div class="fill" id="setFill"></div></div>
+      </div>
+      <canvas id="repBars" class="full-only"></canvas>
+    </div>
+
+    <div class="card" style="margin-top:12px">
+      <canvas id="dial" class="gauge"></canvas>
+      <div class="dialrow">
+        <span>左肘 <b id="angL">-</b></span>
+        <span class="phase-chip" id="phase">idle</span>
+        <span>右肘 <b id="angR">-</b></span>
+      </div>
+      <div class="dialrow" style="margin-top:6px">
+        <span>节奏 <b id="tempoTxt">-</b></span>
+        <span id="ttsHint"></span>
       </div>
     </div>
-    <div>
-      <div class="card">
-        <h1>训练计划</h1>
-        <div class="row"><span>组数 × 每组次数</span>
-          <b><input id="inSets" type="number" value="3" min="1" max="20" style="width:36px;background:#11161d;color:var(--txt);border:1px solid var(--line);border-radius:4px;padding:2px 4px">
-            组 ×
-            <input id="inReps" type="number" value="8" min="1" max="100" style="width:36px;background:#11161d;color:var(--txt);border:1px solid var(--line);border-radius:4px;padding:2px 4px"> 个</b></div>
-        <div class="row"><span>组间休息（秒）</span>
-          <b><input id="inRest" type="number" value="60" min="5" max="600" style="width:52px;background:#11161d;color:var(--txt);border:1px solid var(--line);border-radius:4px;padding:2px 4px"> s</b></div>
-        <div class="modes" style="margin-top:10px">
-          <button id="btnStart" style="background:var(--acc);color:#08130d;font-weight:700">▶ 开始训练</button>
-          <button id="btnStop">⏹ 结束</button>
-        </div>
-        <div class="modes" style="margin-top:8px">
-          <button id="btnSkip">⏭ 跳过休息</button>
-          <button id="btnReset">🗑 清零计数</button>
-        </div>
-        <div id="sessState" style="margin-top:8px;font-size:13px;color:var(--dim)">自由模式：计数持续累计</div>
+
+    <div class="card" style="margin-top:12px">
+      <div class="row"><span>组数 × 每组</span><b>
+        <input id="inSets" type="number" value="3" min="1" max="20"> 组 ×
+        <input id="inReps" type="number" value="8" min="1" max="100"> 个</b></div>
+      <div class="row"><span>组间休息</span><b><input id="inRest" type="number" value="60" min="5" max="600"> 秒</b></div>
+      <div class="btns">
+        <button id="btnStart" class="primary">▶ 开始训练</button>
+        <button id="btnSkip">⏭ 跳过休息</button>
       </div>
-      <div class="card" style="margin-top:14px">
-        <h1>训练面板</h1>
-        <div class="big" id="reps">0</div>
-        <div class="sub">弯举次数（全程 <span id="full">0</span> / 半程 <span id="half">0</span>）</div>
-        <div class="row"><span>当前相位</span><b id="phase">idle</b></div>
-        <div class="row"><span>幽灵计数被拦截</span><b id="suppressed">0</b></div>
-        <div class="row"><span>链路</span><b id="link">-</b></div>
-        <div class="row"><span>推理 (DML)</span><b id="infer">-</b></div>
-        <div class="row"><span>A端 JPEG质量 / 运动</span><b id="aq">-</b></div>
-        <div id="warnings"></div>
-      </div>
-      <div class="card" style="margin-top:14px">
-        <h1>事件日志</h1>
-        <div id="log"></div>
+      <div class="btns">
+        <button id="btnStop">⏹ 结束</button>
+        <button id="btnReset">🗑 清零计数</button>
       </div>
     </div>
-  </div>
+
+    <div class="card full-only" style="margin-top:12px">
+      <div class="row"><span>左右对称</span><b id="symTxt" style="font-size:13px">-</b></div>
+      <h3 style="font-size:13px;color:var(--dim);font-weight:500;margin:8px 0 6px">事件日志</h3>
+      <div id="log"></div>
+    </div>
+  </aside>
+</div>
 
 <script>
+const $ = (id) => document.getElementById(id);
 const HIST = 60;
-const mkChart = (id, color, extra={}) => new Chart(document.getElementById(id), {
+const mk = (id, color) => new Chart($(id), {
   type: "line",
-  data: { labels: [], datasets: [{ data: [], borderColor: color, borderWidth: 1.5,
-           pointRadius: 0, tension: .25, fill: false, ...extra }] },
+  data: { datasets: [{ data: [], borderColor: color, borderWidth: 2.5, pointRadius: 0, tension: .3 }] },
   options: { animation: false, plugins: { legend: { display: false } },
              scales: { x: { display: false },
-                       y: { ticks: { color: "#8a94a3", font: { size: 9 } },
+                       y: { ticks: { color: "#9aa5b5", font: { size: 10 } },
                             grid: { color: "#262d37" } } } }
 });
-const cE2E = mkChart("cE2E", "#4cc38a");
-const cBw  = mkChart("cBw",  "#58a6ff");
-const cFps = mkChart("cFps", "#f0b429");
-const push = (chart, v) => { const d = chart.data.datasets[0].data;
-  d.push(v); if (d.length > HIST) d.shift(); chart.update("none"); };
+const cBw = mk("cBw", "#58a6ff"), cE2E = mk("cE2E", "#4cc38a"), cFps = mk("cFps", "#f0b429");
+const push = (ch, v) => { const d = ch.data.datasets[0].data; d.push(v);
+  if (d.length > HIST) d.shift(); ch.update("none"); };
+const cHist = new Chart($("cHist"), {
+  type: "bar",
+  data: { labels: [], datasets: [
+    { data: [], backgroundColor: "#2c6e4f", yAxisID: "y", label: "次数" },
+    { data: [], type: "line", borderColor: "#f0b429", borderWidth: 2, pointRadius: 2,
+      yAxisID: "y1", label: "全程率", tension: .3 }] },
+  options: { animation: false, plugins: { legend: { display: false } },
+    scales: { x: { ticks: { color: "#9aa5b5", font: { size: 9 } }, grid: { display: false } },
+      y: { ticks: { color: "#9aa5b5", font: { size: 9 } }, grid: { color: "#262d37" } },
+      y1: { position: "right", min: 0, max: 1, ticks: { color: "#f0b429", font: { size: 9 } },
+            grid: { display: false } } } }
+});
 
-const $ = (id) => document.getElementById(id);
-const canvas = $("video"), ctx = canvas.getContext("2d");
-
-async function drawFrame(buf) {
-  const bm = await createImageBitmap(new Blob([buf], { type: "image/jpeg" }));
-  try {
-    if (canvas.width !== bm.width) { canvas.width = bm.width; canvas.height = bm.height; }
-    ctx.drawImage(bm, 0, 0);
-  } finally { bm.close(); }   // N3: never leak the ImageBitmap
+/* ---------------- TTS voice coach (browser SpeechSynthesis) ---------------- */
+let ttsOn = true, lastWarnSaid = "";
+function say(text, interrupt) {
+  if (!ttsOn || !window.speechSynthesis) return;
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = "zh-CN"; u.rate = 1.15;
+  if (interrupt) speechSynthesis.cancel();
+  speechSynthesis.speak(u);
 }
+$("ttsBtn").onclick = () => {
+  ttsOn = !ttsOn;
+  $("ttsBtn").classList.toggle("on", ttsOn);
+  $("ttsBtn").textContent = ttsOn ? "🔊 语音" : "🔇 静音";
+  if (!ttsOn) speechSynthesis.cancel();
+};
+$("ttsBtn").classList.add("on");
 
-let lastIdx = 0;   // highest rep index already logged (B2: index dedup)
+/* ---------------- power ---------------- */
 function setPower(on) {
-  const btn = $("powerBtn");
-  btn.textContent = on ? "⏻ 关停系统" : "⏻ 开启系统";
-  btn.style.color = on ? "var(--bad)" : "var(--acc)";
+  $("powerBtn").textContent = on ? "⏻ 关停系统" : "⏻ 开启系统";
+  $("powerBtn").style.color = on ? "var(--bad)" : "var(--acc)";
   document.querySelectorAll(".modes button[data-mode]").forEach(b => b.disabled = !on);
+  $("btnStart").disabled = !on; $("btnStop").disabled = !on;
   if (!on) {
-    canvas.style.display = "none";
+    $("video").style.display = "none";
     $("modeBadge").style.display = "none";
-    const msg = $("standbyMsg");
-    msg.style.display = "block";
-    msg.textContent = "系统已关停 · 点击右上角 ⏻ 开启";
+    $("standbyMsg").style.display = "block";
+    $("standbyMsg").textContent = "系统已关停 · 点击右上角 ⏻ 开启";
   }
 }
+async function post(url) {
+  const r = await fetch(url, { method: "POST" });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) alert(j.detail || "操作失败");
+  return j;
+}
+$("powerBtn").onclick = async () => {
+  if ($("powerBtn").disabled) return;
+  $("powerBtn").disabled = true;
+  const turnOn = $("powerBtn").textContent.includes("开启");
+  $("powerBtn").textContent = turnOn ? "⏻ 正在开启…" : "⏻ 正在关停…";
+  try { await post(`/api/power/${turnOn ? "on" : "off"}`); }
+  finally { setTimeout(() => { $("powerBtn").disabled = false; }, 800); }
+};
 
+/* ---------------- demo toggle & keyboard ---------------- */
+$("demoBtn").onclick = () => {
+  document.body.classList.toggle("demo");
+  $("demoBtn").classList.toggle("on");
+};
+document.addEventListener("keydown", (e) => {
+  if (e.target.tagName === "INPUT") return;
+  const modes = ["raw", "event", "cascade", "privacy"];
+  if (["1", "2", "3", "4"].includes(e.key))
+    post(`/api/mode/${modes[+e.key - 1]}`);
+  else if (e.code === "Space") { e.preventDefault(); $("btnStart").click(); }
+  else if (e.key.toLowerCase() === "d") $("demoBtn").click();
+  else if (e.key.toLowerCase() === "r") $("btnReset").click();
+});
+
+/* ---------------- controls ---------------- */
+$("btnStart").onclick = async () => {
+  const last = await (await fetch("/api/history/last")).json();
+  if (last && last.reps_total) {
+    $("lastBanner").textContent =
+      `上次 ${last.reps_total} 个 · 全程率 ${Math.round(100 * (last.full_rate || 0))}%`;
+    say(`上次${last.reps_total}个，今天破它`, true);
+  }
+  await post(`/api/session/start?sets=${+$("inSets").value || 3}` +
+             `&reps=${+$("inReps").value || 8}&rest=${+$("inRest").value || 60}`);
+  await refreshHistory();
+};
+$("btnStop").onclick = () => post("/api/session/stop").then(refreshHistory);
+$("btnSkip").onclick = () => post("/api/session/skip_rest");
+$("btnReset").onclick = () => post("/api/stats/reset").then(refreshHistory);
+document.querySelectorAll(".modes button[data-mode]").forEach(btn => {
+  btn.onclick = async () => {
+    if (btn.disabled) return;
+    btn.disabled = true;
+    try { await post(`/api/mode/${btn.dataset.mode}`); }
+    finally { btn.disabled = false; }
+  };
+});
+
+/* ---------------- ROM dial (半圆仪表：绿<75 琥珀75-140 灰>140) -------------- */
+const dial = $("dial"), dctx = dial.getContext("2d");
+let needleL = 170, needleR = 170;
+function drawDial() {
+  const w = dial.clientWidth || 300; dial.width = w * 2; dial.height = 300;
+  const c = dial.getContext("2d"); c.scale(2, 2);
+  const cx = w / 2, cy = 128, R = Math.min(w / 2 - 8, 118);
+  c.clearRect(0, 0, w, 150);
+  const zone = (a0, a1, col) => {
+    c.beginPath();
+    c.arc(cx, cy, R, Math.PI * (1 - a0 / 180), Math.PI * (1 - a1 / 180));
+    c.strokeStyle = col; c.lineWidth = 15; c.stroke();
+  };
+  zone(140, 180, "#39424e"); zone(75, 140, "#8a6a1a"); zone(0, 75, "#2c6e4f");
+  c.fillStyle = "#9aa5b5"; c.font = "11px Consolas";
+  [[0, "180"], [75, "75"], [140, "140"], [180, "0"]].forEach(([a, txt]) => {
+    const rad = Math.PI * (1 - a / 180);
+    c.fillText(txt, cx + Math.cos(rad) * (R + 12) - 8, cy - Math.sin(rad) * (R + 12) + 4);
+  });
+  const needle = (val, col, width) => {
+    const rad = Math.PI * (1 - Math.min(180, Math.max(0, val)) / 180);
+    c.beginPath(); c.moveTo(cx, cy);
+    c.lineTo(cx + Math.cos(rad) * (R - 6), cy - Math.sin(rad) * (R - 6));
+    c.strokeStyle = col; c.lineWidth = width; c.lineCap = "round"; c.stroke();
+  };
+  needle(needleL, "#8b93a1", 3); needle(needleR, "#4cc38a", 5);
+  c.beginPath(); c.arc(cx, cy, 6, 0, 7); c.fillStyle = "#e8ecf1"; c.fill();
+}
+/* ---------------- per-rep depth bars ---------------- */
+let repData = [];
+function drawBars() {
+  const cv = $("repBars"); if (!cv.clientWidth) return;
+  const w = cv.clientWidth, h = cv.clientHeight;
+  cv.width = w * 2; cv.height = h * 2;
+  const c = cv.getContext("2d"); c.scale(2, 2);
+  c.clearRect(0, 0, w, h);
+  const data = repData.slice(-24);
+  const y75 = h - 10 - (75 / 180) * (h - 20);
+  c.strokeStyle = "#f0b429"; c.setLineDash([4, 3]);
+  c.beginPath(); c.moveTo(0, y75); c.lineTo(w, y75); c.stroke(); c.setLineDash([]);
+  const bw = Math.max(3, w / 24 - 3);
+  data.forEach((r, i) => {
+    const x = i * (w / 24) + 2;
+    const bh = (r.min_angle / 180) * (h - 20);
+    c.fillStyle = r.full ? "#4cc38a" : "#b8860b";
+    c.fillRect(x, h - 10 - bh, bw, bh);
+  });
+}
+
+/* ---------------- session / meta rendering ---------------- */
+let lastIdx = 0, lastRepCount = 0, restSpoken = -1;
 function renderSession(s) {
-  const ov = $("sessOverlay"), txt = $("sessState");
+  const ov = $("overlay");
   if (!s || s.phase === "idle") {
-    ov.style.display = "none";
-    txt.textContent = "自由模式：计数持续累计";
-    return;
+    ov.style.display = "none"; $("setLbl").textContent = "自由模式";
+    $("setFill").style.width = "0%"; restSpoken = -1; return;
   }
   if (s.phase === "countdown") {
     ov.style.display = "flex";
-    ov.textContent = Math.ceil(s.remaining_sec);
-    txt.textContent = `即将开始 第1/${s.sets_total}组 · 每组${s.reps_per_set}个`;
+    ov.innerHTML = `${Math.ceil(s.remaining_sec)}<div class="small">准备 · 第1/${s.sets_total}组</div>`;
   } else if (s.phase === "set") {
     ov.style.display = "none";
-    txt.textContent = `💪 第${s.set_index}/${s.sets_total}组 · 本组 ${s.reps_in_set}/${s.reps_per_set}`;
+    $("setLbl").textContent = `第 ${s.set_index}/${s.sets_total} 组 · 本组 ${s.reps_in_set}/${s.reps_per_set}`;
+    $("setFill").style.width = `${100 * s.reps_in_set / s.reps_per_set}%`;
   } else if (s.phase === "rest") {
     ov.style.display = "flex";
-    ov.innerHTML = `<div style="font-size:26px;color:var(--dim)">组间休息</div>
-                    <div>${Math.ceil(s.remaining_sec)}s</div>
-                    <div style="font-size:16px;color:var(--dim);margin-top:8px">下一组 ${s.set_index+1}/${s.sets_total} · 可点"跳过休息"</div>`;
-    txt.textContent = `休息中 · 已完成 ${s.set_reps.join(" + ")} 个`;
+    const left = Math.ceil(s.remaining_sec);
+    ov.innerHTML = `休息 ${left}s<div class="small">下一组 ${s.set_index + 1}/${s.sets_total} · 空格跳过</div>`;
+    if (left <= 3 && left >= 1 && restSpoken !== left) { restSpoken = left; say(String(left)); }
+    $("setFill").style.width = `${100 * (1 - s.remaining_sec / s.rest_sec)}%`;
+    $("setLbl").textContent = `休息中 · 已完成 ${s.set_reps.join("+")} 个`;
   } else if (s.phase === "done") {
     ov.style.display = "flex";
-    ov.innerHTML = `<div style="font-size:26px">🎉 全部完成</div>
-                    <div style="font-size:20px;color:var(--txt);margin-top:10px">
-                    ${s.set_reps.join(" + ")} = ${s.set_reps.reduce((a,b)=>a+b,0)} 个 · 用时 ${Math.round(s.elapsed_sec)}s</div>`;
-    txt.textContent = `✅ 训练完成，用时 ${Math.round(s.elapsed_sec)}s`;
+    const total = s.set_reps.reduce((a, b) => a + b, 0);
+    const score = Math.round(100 * (fullCount / Math.max(total, 1)));
+    ov.innerHTML = `<div style="font-size:30px">🎉 全部完成</div>
+      <div class="small">${s.set_reps.join(" + ")} = ${total} 个 · 用时 ${Math.round(s.elapsed_sec)}s</div>
+      <div class="small" style="color:var(--acc);font-size:20px">全程率 ${score}%</div>`;
+    if (lastIdx && !renderSession._done) {
+      renderSession._done = true;
+      say(`全部完成，${total}个，全程率${score}%`, true);
+      refreshHistory();
+    }
   }
+  if (s.phase !== "done") renderSession._done = false;
 }
-
+let warnTimer = null, fullCount = 0;
+function showWarning(w) {
+  const el = $("warnBanner");
+  el.textContent = "⚠ " + w; el.style.display = "block";
+  clearTimeout(warnTimer);
+  warnTimer = setTimeout(() => { el.style.display = "none"; }, 5000);
+  if (w !== lastWarnSaid) { lastWarnSaid = w; say(w, true); }
+}
 function meta(m) {
   if (m.power === "off") { setPower(false); return; }
   setPower(true);
-  renderSession(m.session);
   $("standbyMsg").style.display = "none";
+  $("video").style.display = "block";
   $("modeBadge").style.display = "block";
-  $("reps").textContent = m.reps;
-  $("full").textContent = m.full;
-  $("half").textContent = m.half;
-  $("phase").textContent = m.phase;
-  $("suppressed").textContent = m.suppressed;
-  $("link").textContent = `${m.rx_fps} fps · ${m.kbps} KB/s · 丢${m.loss}`;
-  $("infer").textContent = m.infer_ms ? `${m.infer_ms} ms` : "-";
-  $("aq").textContent = `q${m.jpeg_q} / ${m.motion}`;
   $("modeBadge").textContent = `mode: ${m.mode}`;
-  const fresh = m.last_frame_age != null && m.last_frame_age < 3;
-  $("linkState").textContent = fresh ? "● 已连接" : "○ 等待帧…";
-  $("linkState").style.color = fresh ? "var(--acc)" : "var(--dim)";
-  $("warnings").innerHTML = (m.warnings || []).slice(-5)
-    .map(w => `<div>⚠ ${w}</div>`).join("");
-  document.querySelectorAll(".modes button[data-mode]").forEach(b => {
-    b.classList.toggle("active", b.dataset.mode === m.mode); });
-  if (m.e2e_ms != null) push(cE2E, m.e2e_ms);
+  $("viewHint").style.display = m.view_ok ? "none" : "block";
+  $("reps").textContent = m.reps;
+  fullCount = m.full;
+  if (m.reps > lastRepCount) {
+    const el = $("reps");
+    el.classList.add("pop"); setTimeout(() => el.classList.remove("pop"), 130);
+    say(String(m.reps));
+  }
+  lastRepCount = m.reps;
+  $("full").textContent = m.full; $("half").textContent = m.half;
+  $("supp").textContent = m.suppressed;
+  $("phase").textContent = m.phase;
+  $("angL").textContent = m.elbow_l ? m.elbow_l.toFixed(0) + "°" : "-";
+  $("angR").textContent = m.elbow_r ? m.elbow_r.toFixed(0) + "°" : "-";
+  needleL = m.elbow_l || needleL; needleR = m.elbow_r || needleR;
+  drawDial();
+  $("bwNow").textContent = m.kbps.toFixed(0);
+  $("lossTxt").textContent = m.loss ? `丢帧 ${m.loss}` : "";
   push(cBw, m.kbps);
+  if (m.e2e_ms != null) push(cE2E, m.e2e_ms);
   push(cFps, m.rx_fps);
+  if ((m.warnings || []).length) showWarning(m.warnings[m.warnings.length - 1]);
+  renderSession(m.session);
+  // events: log + ROM bars + symmetry + tempo
   const evs = m.events || [];
   const last = evs[evs.length - 1];
   if (last && last.index !== lastIdx) {
     const log = $("log");
     evs.filter(e => e.index > lastIdx).forEach(e => {
+      repData.push({ min_angle: e.min_angle, full: e.full });
       const div = document.createElement("div");
       div.className = "rep";
-      div.textContent = `rep ${e.index} [${e.side}] ${e.full ? "全程" : "半程"} min=${e.min_angle}°`;
+      div.textContent = `#${e.index} [${e.side}] ${e.full ? "全程" : "半程"}` +
+        ` ${e.min_angle.toFixed(0)}° 下${(e.t_ecc || 0).toFixed(1)}s 上${(e.t_con || 0).toFixed(1)}s`;
       log.prepend(div);
+      $("tempoTxt").textContent = `下${(e.t_ecc || 0).toFixed(1)} 上${(e.t_con || 0).toFixed(1)}s`;
     });
+    while (log.children.length > 24) log.lastChild.remove();
     lastIdx = last.index;
-    while (log.children.length > 20) log.lastChild.remove();
+    drawBars();
+    const l = evs.filter(e => e.side === "left").length;
+    const r = evs.filter(e => e.side === "right").length;
+    $("symTxt").textContent = `左 ${l} · 右 ${r}`;
   }
 }
 
-async function post(url) {
-  const r = await fetch(url, { method: "POST" });
-  const j = await r.json();
-  if (!r.ok) alert(j.detail || "操作失败");
-  return j;
-}
-
-$("btnStart").addEventListener("click", () => post(
-  `/api/session/start?sets=${+$("inSets").value || 3}&reps=${+$("inReps").value || 8}&rest=${+$("inRest").value || 60}`));
-$("btnStop").addEventListener("click", () => post("/api/session/stop"));
-$("btnSkip").addEventListener("click", () => post("/api/session/skip_rest"));
-$("btnReset").addEventListener("click", () => post("/api/stats/reset"));
-
-$("powerBtn").addEventListener("click", async () => {
-  const btn = $("powerBtn");
-  if (btn.disabled) return;
-  btn.disabled = true;
-  const turnOn = btn.textContent.includes("开启");
-  btn.textContent = turnOn ? "⏻ 正在开启…" : "⏻ 正在关停…";
+/* ---------------- history ---------------- */
+async function refreshHistory() {
   try {
-    const r = await fetch(`/api/power/${turnOn ? "on" : "off"}`, { method: "POST" });
-    const j = await r.json();
-    if (!r.ok) alert(j.detail || "操作失败");
-    else if (j.detail && j.detail.includes("failed")) alert("启动失败: " + j.detail);
-  } catch (e) { alert("操作失败: " + e); }
-  finally { setTimeout(() => { btn.disabled = false; }, 1000); }
-});
+    const rows = await (await fetch("/api/history?limit=14")).json();
+    const ds = rows.slice().reverse();
+    cHist.data.labels = ds.map(r => r.ts_start.slice(5, 10));
+    cHist.data.datasets[0].data = ds.map(r => r.reps_total);
+    cHist.data.datasets[1].data = ds.map(r => r.full_rate);
+    cHist.update("none");
+  } catch (e) { /* history unavailable pre-power-on: fine */ }
+}
+refreshHistory();
 
-document.querySelectorAll(".modes button[data-mode]").forEach(btn => {
-  btn.addEventListener("click", async () => {
-    if (btn.disabled) return;
-    btn.disabled = true;                       // N4: real guard during request
-    try {
-      const r = await fetch(`/api/mode/${btn.dataset.mode}`, { method: "POST" });
-      const j = await r.json();
-      if (!r.ok) alert(j.detail || "切换失败");
-    } catch (e) { alert("切换失败: " + e); }
-    finally { btn.disabled = false; }
-  });
-});
-
+/* ---------------- video & websocket ---------------- */
+const canvas = $("video"), ctx = canvas.getContext("2d");
+async function drawFrame(buf) {
+  const bm = await createImageBitmap(new Blob([buf], { type: "image/jpeg" }));
+  try {
+    if (canvas.width !== bm.width) { canvas.width = bm.width; canvas.height = bm.height; }
+    ctx.drawImage(bm, 0, 0);
+  } finally { bm.close(); }
+}
 let retry = 0;
 function connect() {
   const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
   ws.binaryType = "arraybuffer";
-  ws.onopen = () => { retry = 0; };
+  ws.onopen = () => { retry = 0; refreshHistory(); };
   ws.onmessage = (ev) => {
-    if (typeof ev.data === "string") { meta(JSON.parse(ev.data)); }
-    else {
-      const stage = $("stage");
-      if (canvas.style.display === "none") {
-        canvas.style.display = "block";
-        stage.querySelector(".empty").style.display = "none";
-      }
-      drawFrame(ev.data);
-    }
+    if (typeof ev.data === "string") meta(JSON.parse(ev.data));
+    else drawFrame(ev.data);
   };
-  ws.onclose = () => {   // S1: auto-reconnect with capped backoff
+  ws.onclose = () => {
     retry = Math.min(retry + 1, 4);
     $("linkState").textContent = `↻ 重连中(${retry})…`;
     $("linkState").style.color = "var(--warn)";
@@ -291,6 +468,8 @@ function connect() {
   };
 }
 connect();
+window.addEventListener("resize", () => { drawDial(); drawBars(); });
+drawDial();
 </script>
 </body>
 </html>

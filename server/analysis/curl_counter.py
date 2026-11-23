@@ -252,6 +252,8 @@ class CurlCounter:
         self.rho_front, self.rho_side = rho_front, rho_side
         self._cos_psi: Optional[float] = None   # EMA-smoothed yaw estimate
         self._t_yaw: Optional[float] = None
+        self.last_angles: dict[str, float] = {}  # per-frame corrected angles
+        # (UI: ROM dial); empty when no confident arm
         self.stats = SessionStats()
         self.torso = TorsoSwingChecker() if check_torso_swing else None
         self.trackers: dict[str, _ArmTracker] = {}
@@ -296,9 +298,11 @@ class CurlCounter:
             angle, conf = self.arm_angle(kps, side)
             if conf < self.min_conf:
                 tracker.lost()
+                self.last_angles.pop(side, None)
                 continue
             if self.view_correction and self._cos_psi is not None:
                 angle = correct_projected_angle(angle, self._cos_psi)
+            self.last_angles[side] = angle
             # tempo anchors: _t_last_extended is the last fully-extended
             # sample BEFORE the lift leaves EXTENDED (only updated while
             # extended -- ascent frames crossing up_angle must NOT move it,

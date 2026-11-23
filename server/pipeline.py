@@ -84,6 +84,9 @@ class PipelineStatus:
     frames: int = 0
     jpeg_q: int = 0
     motion: float = 0.0
+    elbow_l: float = 0.0             # corrected live angles (ROM dial)
+    elbow_r: float = 0.0
+    view_ok: bool = True             # False = too frontal, angles unreliable
 
 
 class StreamingPipeline(threading.Thread):
@@ -354,6 +357,10 @@ class StreamingPipeline(threading.Thread):
                     s.frames = frames_total
                     s.jpeg_q = header.jpeg_q
                     s.motion = header.motion
+                    s.elbow_l = counter.last_angles.get("left", 0.0)
+                    s.elbow_r = counter.last_angles.get("right", 0.0)
+                    cp = counter._cos_psi
+                    s.view_ok = cp is None or (1.0 - cp * cp) >= 0.25
                     s.last_frame_age = time.time() - t_recv
                 t_stat, n_stat, b_stat = now, 0, 0
                 first_seq = None
