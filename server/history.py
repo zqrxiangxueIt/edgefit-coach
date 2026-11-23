@@ -57,7 +57,8 @@ class HistoryStore:
     # ------------------------------------------------------------ session --
 
     def begin(self, exercise: str = "curl", sets_planned: int = 0,
-              reps_per_set: int = 0, rest_sec: float = 0.0) -> int:
+              reps_per_set: int = 0, rest_sec: float = 0.0,
+              base_idx: int = 0) -> int:
         with self._lock:
             cur = self._db.execute(
                 "INSERT INTO sessions (ts_start, exercise, sets_planned, "
@@ -66,8 +67,8 @@ class HistoryStore:
                  sets_planned, reps_per_set, rest_sec))
             self._db.commit()
             self._current = int(cur.lastrowid)
-            self._stored_idx = 0
-            return self._current
+            self._stored_idx = base_idx   # S5: reps before the session start
+            return self._current          # must not leak into it
 
     def feed(self, events: list[dict]) -> None:
         """Record new rep events of the open session (index-deduped)."""
@@ -87,17 +88,23 @@ class HistoryStore:
             self._db.commit()
 
     def finish(self, stats: dict, session_snapshot: dict | None = None) -> None:
-        """Close the open session with outcome aggregates."""
-        if self._current is None:
-            return
-        snap = session_snapshot or {}
-        reps_rows = self._db.execute(
-            "SELECT min_angle FROM reps WHERE session_id=? "
-            "AND min_angle IS NOT NULL ORDER BY min_angle",
-            (self._current,)).fetchall()
-        med = (float(reps_rows[len(reps_rows) // 2]["min_angle"])
-               if reps_rows else None)
+        """Close the open session with outcome aggregates.
+
+        NOTE the `warnings` column actually stores the PHANTOM-SUPPRESSED
+        count (stats["suppressed"]) -- historical naming, kept for schema
+        stability (N2).
+        """
         with self._lock:
+            cur = self._current
+            if cur is None:
+                return
+            snap = session_snapshot or {}
+            reps_rows = self._db.execute(
+                "SELECT min_angle FROM reps WHERE session_id=? "
+                "AND min_angle IS NOT NULL ORDER BY min_angle",
+                (cur,)).fetchall()
+            med = (float(reps_rows[len(reps_rows) // 2]["min_angle"])
+                   if reps_rows else None)
             self._db.execute(
                 "UPDATE sessions SET ts_end=?, sets_done=?, reps_total=?, "
                 "full_reps=?, half_reps=?, warnings=?, duration_sec=?, "
@@ -106,7 +113,7 @@ class HistoryStore:
                  snap.get("set_index", 0), stats.get("reps", 0),
                  stats.get("full_reps", 0), stats.get("half_reps", 0),
                  stats.get("suppressed", 0),
-                 snap.get("elapsed_sec", 0.0), med, self._current))
+                 snap.get("elapsed_sec", 0.0), med, cur))
             self._db.commit()
             self._current = None
 

@@ -66,6 +66,7 @@ async def power_on():
 
 @app.post("/api/power/off")
 async def power_off():
+    _finish_open_session(power.pipeline())   # S5: powering off must close
     return await asyncio.get_running_loop().run_in_executor(None, power.off)
 
 
@@ -78,9 +79,10 @@ async def session_start(sets: int = 3, reps: int = 8, rest: float = 60.0):
             if r["power"] != "on":
                 raise HTTPException(502, f"cannot power on: {r['detail']}")
             pipe = power.pipeline()
-        total = pipe.status().reps if pipe else 0
-        power.session.start(total, sets=sets, reps_per_set=reps, rest_sec=rest)
-        store.begin(sets_planned=sets, reps_per_set=reps, rest_sec=rest)
+        total = pipe.counter_total() if pipe else 0   # S6: live total, not
+        power.session.start(total, sets=sets, reps_per_set=reps, rest_sec=rest)  # the up-to-1s-stale window snapshot
+        store.begin(sets_planned=sets, reps_per_set=reps, rest_sec=rest,
+                    base_idx=total)   # S5: don't backfill pre-session reps
         return {"detail": "session started", **power.session.snapshot()}
     except ValueError as e:
         raise HTTPException(400, str(e))
@@ -89,8 +91,15 @@ async def session_start(sets: int = 3, reps: int = 8, rest: float = 60.0):
 def _finish_open_session(pipe) -> None:
     if store.current_id is None:
         return
-    store.finish(pipe.status() if pipe else {},
-                 power.session.snapshot())
+    # B1 regression: HistoryStore.finish expects a DICT; pipe.status() is a
+    # dataclass without .get() -- passing it raw crashed every session finish
+    # and silently lost the whole training history (ts_end stayed NULL).
+    stats: dict = {}
+    if pipe is not None:
+        st = pipe.status()
+        stats = {"reps": st.reps, "full_reps": st.full_reps,
+                 "half_reps": st.half_reps, "suppressed": st.suppressed}
+    store.finish(stats, power.session.snapshot())
 
 
 @app.post("/api/session/stop")
@@ -110,8 +119,9 @@ async def session_skip_rest():
 @app.post("/api/stats/reset")
 async def stats_reset():
     power.session.stop()
+    _finish_open_session(power.pipeline())   # S5: close history BEFORE the
     return await asyncio.get_running_loop().run_in_executor(
-        None, power.reset_stats)
+        None, power.reset_stats)              # counter index restarts
 
 
 @app.get("/api/power")

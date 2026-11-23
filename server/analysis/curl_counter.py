@@ -123,15 +123,24 @@ class _ArmTracker:
         self._t_min: Optional[float] = None         # when this rep hit its
         self._t_last_extended: Optional[float] = None  # deepest flexion / last
         # fully-extended sample -- the two anchors of tempo measurement
+        self._t_ext_entry: Optional[float] = None   # zone-entry time of the
+        # EXTENDED confirmation -- re-anchors _t_last_extended AFTER the
+        # completed rep's tempo is read (touching it inside step() would
+        # poison that very reading)
+        self._debounce_target: Optional[Phase] = None  # S4: a timer armed for
+        self._t_prev: Optional[float] = None            # one phase must not
+        # confirm the opposite phase; and big frame gaps re-arm (S3)
 
     def lost(self) -> None:
         self.phase = Phase.IDLE
         self._min_angle_in_rep = 180.0
         self._debounce_t0 = None
+        self._debounce_target = None
         self.gate.reset()
         self.rep_started_t = None
         self._t_min = None
         self._t_last_extended = None
+        self._t_ext_entry = None
 
     def step(self, angle: float, t: float) -> Optional[float]:
         """Advance one frame.
@@ -150,7 +159,22 @@ class _ArmTracker:
 
         if target == self.phase:
             self._debounce_t0 = None    # confirmed in-phase: re-arm
+            self._debounce_target = None
             return None
+
+        # S3: a long observation gap (dropped frames / throttling) does not
+        # count as "stayed in zone" -- re-arm when the gap is large
+        if self._t_prev is not None and t - self._t_prev > max(3.0 * self.debounce_s, 0.5):
+            self._debounce_t0 = None
+            self._debounce_target = None
+        self._t_prev = t
+
+        # S4: the debounce timer belongs to ONE target phase; a frame aimed
+        # at the opposite phase must re-arm it, otherwise a single-frame
+        # direction flip could confirm instantly on a sparse frame
+        if self._debounce_target != target:
+            self._debounce_t0 = None
+            self._debounce_target = target
 
         # sustained-target confirmation (time-based): the angle must STAY in
         # the target zone for debounce_s continuously
@@ -163,13 +187,16 @@ class _ArmTracker:
         completed_min: Optional[float] = None
         if target is Phase.EXTENDED and self.phase is Phase.CURLING:
             completed_min = self._min_angle_in_rep
+            self._t_ext_entry = self._debounce_t0   # S2: remember zone entry
         self.phase = target
         self._debounce_t0 = None
+        self._debounce_target = None
         if target is Phase.CURLING:
             # seed with the confirming frame's angle: for a fast rep this is
             # often the deepest point, and pre-confirmation frames were
             # measured while EXTENDED (untrusted, see update())
             self._min_angle_in_rep = angle
+            self._t_min = t                          # S1: seed the tempo anchor
         else:
             self._min_angle_in_rep = 180.0        # start measuring the next rep
         self.gate.reset()                         # re-arm on every confirmed phase
@@ -344,11 +371,14 @@ class CurlCounter:
             eff_tol = min(12.0, max(self.full_rep_tol, 3.0 * sigma_theta))
             full = rep_min <= self.full_rep_angle + eff_tol
             # tempo from the anchors (guard against missing anchors: a rep
-            # that never sampled a full extension has no measurable phases)
+            # that never sampled a full extension has no measurable phases).
+            # t_ecc ends at the zone-ENTRY time (S2): the confirmation lands
+            # debounce_s later and would systematically inflate it
             t_con = (tracker._t_min - tracker._t_last_extended
                      if tracker._t_min is not None
                      and tracker._t_last_extended is not None else 0.0)
-            t_ecc = (t - tracker._t_min
+            t_ecc_end = tracker._t_ext_entry if tracker._t_ext_entry is not None else t
+            t_ecc = (t_ecc_end - tracker._t_min
                      if tracker._t_min is not None else 0.0)
             self.stats.reps += 1
             self.stats.full_reps += int(full)
@@ -372,6 +402,12 @@ class CurlCounter:
                 swing = self.torso.verdict(side, tracker.rep_started_t, t)
                 if swing:
                     self.stats.warnings.append(f"[{side}] rep {ev.index}: {swing}")
+            # S1/S2: re-anchor for the NEXT rep only after this rep's tempo
+            # has been read -- and clear the min anchor so it cannot leak
+            if tracker._t_ext_entry is not None:
+                tracker._t_last_extended = tracker._t_ext_entry
+                tracker._t_ext_entry = None
+            tracker._t_min = None
             if len(self.stats.warnings) > 50:      # hours-long sessions (N9)
                 del self.stats.warnings[:-50]
             tracker.rep_started_t = None

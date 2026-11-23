@@ -137,6 +137,11 @@ class StreamingPipeline(threading.Thread):
         """Reset counter/smoother/session at the next frame (free mode)."""
         self._reset_req.set()
 
+    def counter_total(self) -> int:
+        """Live rep total (not the stats-window snapshot)."""
+        c = getattr(self, "_counter", None)
+        return c.stats.reps if c is not None else 0
+
     def control_endpoint(self) -> str:
         host = self.connect.split("//")[1].rsplit(":", 1)[0]
         port = int(self.connect.rsplit(":", 1)[1]) + 1
@@ -197,6 +202,8 @@ class StreamingPipeline(threading.Thread):
         engine = PoseEngine(self.model, backend=self.backend)
         smoother = KeypointSmoother()
         counter = CurlCounter()
+        self._counter = counter     # for counter_total() (S6): status-window
+        # snapshots lag up to stats_every; session baselines need the live value
         ctx = zmq.Context.instance()
         sock = ctx.socket(zmq.SUB)
         sock.setsockopt(zmq.SUBSCRIBE, b"frame")
@@ -266,6 +273,7 @@ class StreamingPipeline(threading.Thread):
                 self._reset_req.clear()
                 smoother = KeypointSmoother()
                 counter = CurlCounter()
+                self._counter = counter
                 events = []
                 if self.session is not None:
                     self.session.stop()

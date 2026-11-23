@@ -101,7 +101,9 @@ def test_half_rep_flagged_with_warning():
     assert len(events) == 2
     assert all(not e.full for e in events)
     assert c.stats.half_reps == 2
-    assert len(c.stats.warnings) == 2
+    amp = [w for w in c.stats.warnings if "幅度不足" in w]
+    assert len(amp) == 2          # tempo warnings for 0.2s synthetic reps are
+    # legitimate and may co-exist; only the range warnings are asserted here
 
 
 def test_glitch_while_extended_does_not_pollute_min():
@@ -266,3 +268,50 @@ def test_tempo_fast_eccentric_warns():
     assert len(events) == 1
     assert events[0].t_ecc < 1.0
     assert any("下放过快" in w for w in c.stats.warnings)
+
+
+def test_tempo_back_to_back_no_pause():
+    """S2 回归：无停顿连发时，第二 rep 的 t_con 不得被上一周期污染。"""
+    c = CurlCounter()
+    seq = [(170.0, i / 10) for i in range(10)]
+    for _ in range(2):                      # rep: 快起(0.15s) 短持 快落(0.15s) 立即再起
+        seq += [(170 - 130 * (i + 1) / 4, None) for i in range(4)]      # placeholders fixed below
+    # build explicit timed sequence instead
+    seq = [(170.0, i / 10) for i in range(10)]
+    t = 1.0
+    for _ in range(2):
+        for k in range(4):                  # lift 0.12s
+            seq.append((170 - 130 * (k + 1) / 4, t)); t += 0.04
+        for k in range(4):                  # bottom hold 0.12s
+            seq.append((40.0, t)); t += 0.04
+        for k in range(4):                  # lower 0.12s ... back to extended
+            seq.append((40 + 130 * (k + 1) / 4, t)); t += 0.04
+        # NO extended hold: next rep starts immediately
+        for k in range(3):
+            seq.append((170.0, t)); t += 0.04
+    evs = _feed_timed(c, seq)
+    assert len(evs) == 2
+    for e in evs:
+        # each phase was built at ~0.12-0.16s; inflated anchors would show >1s
+        assert 0.05 <= e.t_con <= 0.45, f"t_con polluted: {e.t_con}"
+        assert 0.05 <= e.t_ecc <= 0.45, f"t_ecc polluted: {e.t_ecc}"
+
+
+def test_tempo_min_at_confirmation_frame():
+    """S1 回归：确认帧即最低点且后续无更低帧时，t_min 必须取确认帧时刻。"""
+    c = CurlCounter()
+    seq = [(170.0, i / 10) for i in range(10)]
+    t = 1.0
+    for k in range(4):
+        seq.append((170 - 130 * (k + 1) / 4, t)); t += 0.05   # descend
+    for k in range(6):                                        # plateau at 40
+        seq.append((40.0, t)); t += 0.05
+    for k in range(6):                                        # ascend
+        seq.append((40 + 130 * (k + 1) / 6, t)); t += 0.05
+    for k in range(4):
+        seq.append((170.0, t)); t += 0.05
+    evs = _feed_timed(c, seq)
+    assert len(evs) == 1
+    e = evs[0]
+    assert 0.15 <= e.t_con <= 0.30
+    assert 0.35 <= e.t_ecc <= 0.65   # lower 40->140 crossing ~0.5s by construction
